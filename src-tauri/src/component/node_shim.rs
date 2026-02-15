@@ -8,12 +8,23 @@ use std::path::PathBuf;
 
 use crate::error::{AppError, Result};
 use crate::paths::{
-    get_component_dir, get_node_bin_dir, get_node_exe_path, get_nodejs_shim_dir,
-    get_npm_exe_path, get_npm_prefix_bin_dir, get_npm_prefix_modules_dir, get_npx_exe_path,
+    get_component_dir, get_node_bin_dir, get_node_exe_path, get_nodejs_shim_dir, get_npm_exe_path,
+    get_npm_prefix_bin_dir, get_npm_prefix_modules_dir, get_npx_exe_path,
 };
 
 /// Tools for which shims are generated.
 const SHIM_TOOLS: &[&str] = &["node", "npm", "npx"];
+
+fn dedup_paths_keep_order(paths: &[&std::path::Path]) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for p in paths {
+        if out.iter().any(|x| x.as_path() == *p) {
+            continue;
+        }
+        out.push(p.to_path_buf());
+    }
+    out
+}
 
 /// Generate shim scripts for node, npm, and npx.
 ///
@@ -64,15 +75,17 @@ fn generate_platform_shims(
     prefix_bin: &std::path::Path,
     node_bin: &std::path::Path,
 ) -> Result<()> {
+    let path_dirs = dedup_paths_keep_order(&[modules_bin, prefix_bin, node_bin]);
+
     #[cfg(not(target_os = "windows"))]
     {
-        generate_sh_shim(shim_dir, tool, real_bin, env_vars, modules_bin, prefix_bin, node_bin)?;
+        generate_sh_shim(shim_dir, tool, real_bin, env_vars, &path_dirs)?;
     }
 
     #[cfg(target_os = "windows")]
     {
-        generate_cmd_shim(shim_dir, tool, real_bin, env_vars, modules_bin, prefix_bin, node_bin)?;
-        generate_ps1_shim(shim_dir, tool, real_bin, env_vars, modules_bin, prefix_bin, node_bin)?;
+        generate_cmd_shim(shim_dir, tool, real_bin, env_vars, &path_dirs)?;
+        generate_ps1_shim(shim_dir, tool, real_bin, env_vars, &path_dirs)?;
     }
 
     Ok(())
@@ -86,9 +99,7 @@ fn generate_sh_shim(
     tool: &str,
     real_bin: &std::path::Path,
     env_vars: &[(OsString, OsString)],
-    modules_bin: &std::path::Path,
-    prefix_bin: &std::path::Path,
-    node_bin: &std::path::Path,
+    path_dirs: &[PathBuf],
 ) -> Result<()> {
     use std::os::unix::ffi::OsStrExt;
 
@@ -98,16 +109,24 @@ fn generate_sh_shim(
     for (key, val) in env_vars {
         let key_str = String::from_utf8_lossy(key.as_bytes());
         let val_str = String::from_utf8_lossy(val.as_bytes());
-        script.push_str(&format!("export {}='{}'\n", key_str, shell_escape(&val_str)));
+        script.push_str(&format!(
+            "export {}='{}'\n",
+            key_str,
+            shell_escape(&val_str)
+        ));
     }
 
     // Prepend PATH
-    script.push_str(&format!(
-        "export PATH='{}':'{}':'{}':\"$PATH\"\n",
-        shell_escape(&modules_bin.display().to_string()),
-        shell_escape(&prefix_bin.display().to_string()),
-        shell_escape(&node_bin.display().to_string()),
-    ));
+    script.push_str("export PATH=");
+    for (i, dir) in path_dirs.iter().enumerate() {
+        if i > 0 {
+            script.push(':');
+        }
+        script.push('\'');
+        script.push_str(&shell_escape(&dir.display().to_string()));
+        script.push('\'');
+    }
+    script.push_str(":\"$PATH\"\n");
 
     // exec real binary
     script.push_str(&format!(
@@ -133,9 +152,7 @@ fn generate_cmd_shim(
     tool: &str,
     real_bin: &std::path::Path,
     env_vars: &[(OsString, OsString)],
-    modules_bin: &std::path::Path,
-    prefix_bin: &std::path::Path,
-    node_bin: &std::path::Path,
+    path_dirs: &[PathBuf],
 ) -> Result<()> {
     let mut script = String::from("@echo off\r\n");
 
@@ -145,12 +162,14 @@ fn generate_cmd_shim(
         script.push_str(&format!("set \"{}={}\"\r\n", key_str, val_str));
     }
 
-    script.push_str(&format!(
-        "set \"PATH={};{};{};%PATH%\"\r\n",
-        modules_bin.display(),
-        prefix_bin.display(),
-        node_bin.display(),
-    ));
+    let mut path_prefix = String::new();
+    for (i, dir) in path_dirs.iter().enumerate() {
+        if i > 0 {
+            path_prefix.push(';');
+        }
+        path_prefix.push_str(&dir.display().to_string());
+    }
+    script.push_str(&format!("set \"PATH={};%PATH%\"\r\n", path_prefix));
 
     script.push_str(&format!("\"{}\" %*\r\n", real_bin.display()));
 
@@ -169,9 +188,7 @@ fn generate_ps1_shim(
     tool: &str,
     real_bin: &std::path::Path,
     env_vars: &[(OsString, OsString)],
-    modules_bin: &std::path::Path,
-    prefix_bin: &std::path::Path,
-    node_bin: &std::path::Path,
+    path_dirs: &[PathBuf],
 ) -> Result<()> {
     let mut script = String::new();
 
@@ -185,12 +202,15 @@ fn generate_ps1_shim(
         ));
     }
 
-    script.push_str(&format!(
-        "$env:PATH = '{};{};{};' + $env:PATH\r\n",
-        modules_bin.display(),
-        prefix_bin.display(),
-        node_bin.display(),
-    ));
+    let mut path_prefix = String::new();
+    for (i, dir) in path_dirs.iter().enumerate() {
+        if i > 0 {
+            path_prefix.push(';');
+        }
+        path_prefix.push_str(&dir.display().to_string());
+    }
+    // Keep a trailing ';' so the concatenation is always well-formed.
+    script.push_str(&format!("$env:PATH = '{};' + $env:PATH\r\n", path_prefix));
 
     script.push_str(&format!(
         "& '{}' @args\r\n",
@@ -206,7 +226,7 @@ fn generate_ps1_shim(
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-/// Escape single quotes for sh scripts.
+#[cfg(not(target_os = "windows"))]
 fn shell_escape(s: &str) -> String {
     s.replace('\'', "'\\''")
 }
