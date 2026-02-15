@@ -18,12 +18,15 @@ export function InstanceStatusTag({ instance, deployProgress }: InstanceStatusTa
     return <Tag color="processing">部署中</Tag>;
   }
 
+  const tagColor =
+    instance.state === 'running' ? 'green' : instance.state === 'unhealthy' ? 'red' : 'default';
+  const tagText =
+    instance.state === 'running' ? '运行中' : instance.state === 'unhealthy' ? '不健康' : '已停止';
+
   return (
     <Space size="small">
-      <Tag color={instance.running ? 'green' : 'default'}>
-        {instance.running ? '运行中' : '已停止'}
-      </Tag>
-      {instance.running && !instance.dashboard_enabled && (
+      <Tag color={tagColor}>{tagText}</Tag>
+      {instance.state !== 'stopped' && instance.pid_tracker_not_available && (
         <Tooltip title="Launcher无法正确追踪此实例运行状态">
           <WarningOutlined style={{ color: '#faad14' }} />
         </Tooltip>

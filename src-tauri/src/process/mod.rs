@@ -11,18 +11,15 @@ pub(crate) mod libc_api;
 pub(crate) mod win_api;
 
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub use control::{
     can_signal_expected_process, check_port_available, find_available_port, force_kill,
     graceful_shutdown, resolve_process_executable_path,
 };
 pub use manager::ProcessManager;
-
-/// Grace period before marking instance as disconnected (~2 minutes).
-const HEALTH_CHECK_GRACE_PERIOD: Duration = Duration::from_secs(120);
 
 /// Maximum backoff interval between health checks.
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
@@ -33,12 +30,24 @@ const MONITOR_INTERVAL: Duration = Duration::from_secs(5);
 /// Timeout for graceful shutdown before force killing.
 const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Number of consecutive health check failures before marking as unhealthy.
+const UNHEALTHY_THRESHOLD: u32 = 3;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InstanceState {
+    Stopped,
+    Running,
+    Unhealthy,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeEventReason {
     ProcessTracked,
     ProcessRemoved,
-    HealthDisconnected,
+    HealthUnhealthy,
+    HealthRestored,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -56,17 +65,15 @@ pub struct InstanceProcess {
     pub dashboard_enabled: bool,
     /// Whether the original child PID has exited (reported by `child.wait()`).
     pub(crate) pid_exited: bool,
-    /// When health check failures started (None if healthy).
-    pub(crate) health_failure_since: Option<Instant>,
     /// When to perform the next health check (for exponential backoff).
-    pub(crate) next_check_at: Option<Instant>,
+    pub(crate) next_check_at: Option<std::time::Instant>,
     /// Number of consecutive health check failures.
     pub(crate) failure_count: u32,
 }
 
 #[derive(Debug, Clone)]
 pub struct InstanceRuntimeSnapshot {
-    pub running: bool,
+    pub state: InstanceState,
     pub port: u16,
     pub dashboard_enabled: bool,
 }
@@ -84,7 +91,6 @@ impl InstanceProcess {
             port,
             dashboard_enabled,
             pid_exited: false,
-            health_failure_since: None,
             next_check_at: None,
             failure_count: 0,
         }
@@ -96,7 +102,6 @@ impl InstanceProcess {
     }
 
     pub(crate) fn clear_health_failure_state(&mut self) {
-        self.health_failure_since = None;
         self.next_check_at = None;
         self.failure_count = 0;
     }

@@ -13,8 +13,8 @@ use super::health::check_health;
 #[cfg(target_os = "windows")]
 use super::win_api::get_pid_on_port;
 use super::{
-    InstanceProcess, InstanceRuntimeSnapshot, RuntimeEvent, RuntimeEventReason,
-    HEALTH_CHECK_GRACE_PERIOD, MONITOR_INTERVAL,
+    InstanceProcess, InstanceRuntimeSnapshot, InstanceState, RuntimeEvent, RuntimeEventReason,
+    MONITOR_INTERVAL, UNHEALTHY_THRESHOLD,
 };
 
 /// Snapshot of an instance's state for the status check loop.
@@ -81,72 +81,6 @@ impl ProcessManager {
             instance_id: instance_id.to_string(),
             reason,
         });
-    }
-
-    /// Handle a health check failure for a dashboard-enabled instance.
-    /// Returns `true` if the instance is still in grace period (considered alive).
-    fn handle_health_failure(&self, id: &str, now: Instant) -> bool {
-        let mut procs = write_lock_recover(&self.processes, "ProcessManager.processes");
-        let Some(info) = procs.get_mut(id) else {
-            return false;
-        };
-
-        if info.health_failure_since.is_none() {
-            info.health_failure_since = Some(now);
-        }
-        info.failure_count += 1;
-
-        let failure_count = info.failure_count;
-        let failure_start = info.health_failure_since.unwrap_or(now);
-        let failure_duration = now.duration_since(failure_start);
-        let grace_exceeded = failure_duration >= HEALTH_CHECK_GRACE_PERIOD;
-
-        if !grace_exceeded {
-            let backoff = info.calculate_backoff();
-            info.next_check_at = Some(now + backoff);
-        }
-
-        drop(procs);
-
-        if failure_count >= 3 {
-            log::warn!(
-                "Instance {} health check failed {} times, monitoring...",
-                id,
-                failure_count
-            );
-        }
-
-        if grace_exceeded {
-            log::error!(
-                "Instance {} disconnected after {:?} ({} failures)",
-                id,
-                failure_duration,
-                failure_count
-            );
-            false
-        } else {
-            true
-        }
-    }
-
-    /// Remove stale instances and emit disconnect events.
-    fn cleanup_stale_instances(&self, stale_instances: &[String]) {
-        if stale_instances.is_empty() {
-            return;
-        }
-        let mut disconnected_ids = Vec::new();
-        let mut procs = write_lock_recover(&self.processes, "ProcessManager.processes");
-        for id in stale_instances {
-            if procs.remove(id).is_some() {
-                log::info!("Removed stale process tracking entry for instance {}", id);
-                disconnected_ids.push(id.clone());
-            }
-        }
-        drop(procs);
-
-        for id in disconnected_ids {
-            self.emit_runtime_event(&id, RuntimeEventReason::HealthDisconnected);
-        }
     }
 
     pub fn start_runtime_monitor(self: Arc<Self>) {
@@ -228,13 +162,15 @@ impl ProcessManager {
         }
     }
 
-    /// Get running status for all tracked instances.
+    /// Get state for all tracked instances.
     ///
-    /// Uses health endpoint check with exponential backoff:
-    /// 1. Check /api/stat/start-time endpoint
-    /// 2. If succeeds: update PID if needed, clear failure state
-    /// 3. If fails: exponential backoff retry, grace period ~2min before marking as disconnected
-    pub async fn get_all_statuses(&self) -> HashMap<String, bool> {
+    /// - All instances: check `is_expected_process_alive` first; dead → `Stopped` (remove).
+    /// - dashboard_enabled + alive: health check with exponential backoff.
+    ///   - healthy → `Running` (update PID on Windows if needed)
+    ///   - failures < UNHEALTHY_THRESHOLD → `Running` (tolerate)
+    ///   - failures >= UNHEALTHY_THRESHOLD → `Unhealthy`, emit event
+    /// - dashboard_disabled + alive → `Running`
+    pub async fn get_all_statuses(&self) -> HashMap<String, InstanceState> {
         let now = Instant::now();
 
         // Get instances to check
@@ -255,42 +191,52 @@ impl ProcessManager {
         };
 
         let mut results = HashMap::new();
-        let mut stale_instances = Vec::new();
+        let mut dead_instances = Vec::new();
 
         for entry in instances {
-            if !entry.dashboard_enabled {
-                let alive = !entry.pid_exited
-                    && is_expected_process_alive(entry.pid, &entry.executable_path);
+            // First: check if the process is alive
+            let alive =
+                !entry.pid_exited && is_expected_process_alive(entry.pid, &entry.executable_path);
 
-                if alive {
-                    let mut procs = write_lock_recover(&self.processes, "ProcessManager.processes");
-                    if let Some(info) = procs.get_mut(&entry.id) {
-                        info.clear_health_failure_state();
-                    }
-                    drop(procs);
-                    results.insert(entry.id, true);
-                } else {
-                    stale_instances.push(entry.id.clone());
-                    results.insert(entry.id, false);
-                }
-
+            if !alive {
+                dead_instances.push(entry.id.clone());
+                results.insert(entry.id, InstanceState::Stopped);
                 continue;
             }
 
-            // Check if we should skip this check (exponential backoff)
+            if !entry.dashboard_enabled {
+                // Process alive, no dashboard → Running
+                let mut procs = write_lock_recover(&self.processes, "ProcessManager.processes");
+                if let Some(info) = procs.get_mut(&entry.id) {
+                    info.clear_health_failure_state();
+                }
+                drop(procs);
+                results.insert(entry.id, InstanceState::Running);
+                continue;
+            }
+
+            // Dashboard enabled: perform health check with backoff
             if let Some(next_at) = entry.next_check_at {
                 if now < next_at {
-                    // Not yet time to check, assume still running (in grace period)
-                    results.insert(entry.id, true);
+                    // Not yet time to check — use previous state
+                    let procs = read_lock_recover(&self.processes, "ProcessManager.processes");
+                    let state = if procs
+                        .get(&entry.id)
+                        .is_some_and(|info| info.failure_count >= UNHEALTHY_THRESHOLD)
+                    {
+                        InstanceState::Unhealthy
+                    } else {
+                        InstanceState::Running
+                    };
+                    drop(procs);
+                    results.insert(entry.id, state);
                     continue;
                 }
             }
 
-            // Perform health check
             let is_healthy = check_health(&self.http_client, entry.port).await;
 
             if is_healthy {
-                // Health check passed — service is alive (may have self-restarted with a new PID)
                 let mut procs = write_lock_recover(&self.processes, "ProcessManager.processes");
                 if let Some(info) = procs.get_mut(&entry.id) {
                     #[cfg(target_os = "windows")]
@@ -315,7 +261,8 @@ impl ProcessManager {
                             }
                         }
                     }
-                    if info.failure_count >= 3 {
+                    let was_unhealthy = info.failure_count >= UNHEALTHY_THRESHOLD;
+                    if was_unhealthy {
                         log::info!(
                             "Instance {} health restored after {} failures",
                             entry.id,
@@ -324,27 +271,72 @@ impl ProcessManager {
                     }
                     info.pid_exited = false;
                     info.clear_health_failure_state();
+
+                    if was_unhealthy {
+                        drop(procs);
+                        self.emit_runtime_event(&entry.id, RuntimeEventReason::HealthRestored);
+                    }
                 }
-                drop(procs);
-                results.insert(entry.id, true);
+                results.insert(entry.id, InstanceState::Running);
             } else {
-                // Health check failed — walk grace period regardless of PID state
-                let alive = self.handle_health_failure(&entry.id, now);
-                if !alive {
-                    stale_instances.push(entry.id.clone());
+                // Health check failed
+                let mut procs = write_lock_recover(&self.processes, "ProcessManager.processes");
+                let mut emit_unhealthy_event = false;
+                let state = if let Some(info) = procs.get_mut(&entry.id) {
+                    let was_below_threshold = info.failure_count < UNHEALTHY_THRESHOLD;
+                    info.failure_count += 1;
+                    let backoff = info.calculate_backoff();
+                    info.next_check_at = Some(now + backoff);
+
+                    if info.failure_count >= UNHEALTHY_THRESHOLD {
+                        if was_below_threshold {
+                            log::warn!(
+                                "Instance {} marked unhealthy after {} consecutive health check failures",
+                                entry.id,
+                                info.failure_count
+                            );
+                            emit_unhealthy_event = true;
+                        }
+                        InstanceState::Unhealthy
+                    } else {
+                        InstanceState::Running
+                    }
+                } else {
+                    InstanceState::Stopped
+                };
+                drop(procs);
+
+                if emit_unhealthy_event {
+                    self.emit_runtime_event(&entry.id, RuntimeEventReason::HealthUnhealthy);
                 }
-                results.insert(entry.id, alive);
+
+                results.insert(entry.id, state);
             }
         }
 
-        self.cleanup_stale_instances(&stale_instances);
+        // Remove dead instances
+        if !dead_instances.is_empty() {
+            let mut procs = write_lock_recover(&self.processes, "ProcessManager.processes");
+            let mut removed_instances = Vec::new();
+            for id in &dead_instances {
+                if procs.remove(id).is_some() {
+                    log::info!("Removed dead process tracking entry for instance {}", id);
+                    removed_instances.push(id.clone());
+                }
+            }
+            drop(procs);
+
+            for id in removed_instances {
+                self.emit_runtime_event(&id, RuntimeEventReason::ProcessRemoved);
+            }
+        }
 
         results
     }
 
     /// Get a runtime snapshot for all tracked instances.
     pub async fn get_runtime_snapshot(&self) -> HashMap<String, InstanceRuntimeSnapshot> {
-        let running = self.get_all_statuses().await;
+        let statuses = self.get_all_statuses().await;
         let procs = read_lock_recover(&self.processes, "ProcessManager.processes");
 
         procs
@@ -353,44 +345,16 @@ impl ProcessManager {
                 (
                     id.clone(),
                     InstanceRuntimeSnapshot {
-                        running: running.get(id).copied().unwrap_or(false),
+                        state: statuses
+                            .get(id)
+                            .cloned()
+                            .unwrap_or(InstanceState::Stopped),
                         port: info.port,
                         dashboard_enabled: info.dashboard_enabled,
                     },
                 )
             })
             .collect()
-    }
-
-    /// Wait for an instance to become healthy (startup complete).
-    /// Polls the health endpoint with exponential backoff until success or timeout.
-    pub async fn wait_for_startup(
-        &self,
-        pid: u32,
-        port: u16,
-        executable_path: &std::path::Path,
-        timeout_secs: u64,
-    ) -> std::result::Result<(), String> {
-        let start = std::time::Instant::now();
-        let timeout = std::time::Duration::from_secs(timeout_secs);
-        let mut interval = std::time::Duration::from_millis(500);
-        let max_interval = std::time::Duration::from_secs(2);
-
-        loop {
-            if !is_expected_process_alive(pid, executable_path) {
-                return Err("Instance process exited".to_string());
-            }
-            if check_health(&self.http_client, port).await {
-                return Ok(());
-            }
-
-            if start.elapsed() >= timeout {
-                return Err(format!("Instance startup timed out ({}s)", timeout_secs));
-            }
-
-            tokio::time::sleep(interval).await;
-            interval = (interval * 2).min(max_interval);
-        }
     }
 
     /// Get the IDs of all currently tracked instances.

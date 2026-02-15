@@ -10,7 +10,7 @@ use crate::backup::{create_backup, delete_backup, restore_data_to_instance};
 use crate::config::{load_config, with_config_mut, AppConfig, InstanceConfig};
 use crate::error::{AppError, Result};
 use crate::paths::{get_instance_core_dir, get_instance_dir, get_instance_venv_dir};
-use crate::process::{InstanceRuntimeSnapshot, ProcessManager};
+use crate::process::{InstanceRuntimeSnapshot, InstanceState, ProcessManager};
 use crate::validation::validate_instance_id;
 
 fn ensure_version_installed(config: &AppConfig, version: &str) -> Result<()> {
@@ -274,18 +274,21 @@ pub async fn list_instances(process_manager: &ProcessManager) -> Result<Vec<Inst
                     .get(&id)
                     .cloned()
                     .unwrap_or_else(|| InstanceRuntimeSnapshot {
-                        running: false,
+                        state: InstanceState::Stopped,
                         port: 0,
                         dashboard_enabled: is_dashboard_enabled(&id),
                     });
+            let pid_tracker_not_available =
+                !snapshot.dashboard_enabled && std::env::consts::OS == "windows";
 
             InstanceStatus {
                 id,
                 name: inst.name,
-                running: snapshot.running,
+                state: snapshot.state,
                 port: snapshot.port,
                 version: inst.version,
                 dashboard_enabled: snapshot.dashboard_enabled,
+                pid_tracker_not_available,
                 configured_port: inst.port,
             }
         })

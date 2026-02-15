@@ -21,7 +21,7 @@ use crate::process::{
 };
 use crate::validation::validate_instance_id;
 
-const STARTUP_HEALTH_CHECK_DELAY_SECS: u64 = 3;
+const STARTUP_LOG_TIMEOUT_SECS: u64 = 300;
 
 /// Resolve the executable path for a freshly spawned child, killing it on failure.
 async fn resolve_child_executable_path(
@@ -174,110 +174,60 @@ pub async fn start_instance(
         process_manager_for_wait.mark_pid_exited(&instance_id_wait, expected_pid);
     });
 
-    if dashboard_enabled {
-        // Dashboard enabled: use HTTP health check
-        let instance_id_stdout = instance_id.to_string();
-        let mut stdout_reader = BufReader::new(stdout).lines();
+    // Unified startup detection via log output
+    let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
+    let mut tx = Some(tx);
+    let instance_id_stdout = instance_id.to_string();
+    let mut stdout_reader = BufReader::new(stdout).lines();
 
-        tokio::spawn(async move {
-            while let Ok(Some(line)) = stdout_reader.next_line().await {
-                log::info!("[AstrBot {} stdout] {}", instance_id_stdout, line);
-            }
-        });
-
-        tokio::time::sleep(tokio::time::Duration::from_secs(
-            STARTUP_HEALTH_CHECK_DELAY_SECS,
-        ))
-        .await;
-
-        match process_manager
-            .wait_for_startup(pid, port, &executable_path, 120)
-            .await
-        {
-            Ok(()) => {
-                log::info!(
-                    "Instance {} started (pid: {}, port: {})",
-                    instance_id,
-                    pid,
-                    port
-                );
-                emit_progress(app_handle, instance_id, "done", "实例已启动", 100);
-                Ok(port)
-            }
-            Err(e) => {
-                // Avoid killing an unrelated process if PID got reused.
-                if can_signal_expected_process(pid, &executable_path) {
-                    if let Err(kill_err) = force_kill(pid) {
-                        log::warn!(
-                            "Failed to kill timed-out instance {}: {}",
-                            instance_id,
-                            kill_err
-                        );
-                    }
-                } else {
-                    log::warn!(
-                        "Skip killing timed-out instance {}: PID {} executable path mismatch (possible PID reuse)",
-                        instance_id,
-                        pid
-                    );
+    tokio::spawn(async move {
+        while let Ok(Some(line)) = stdout_reader.next_line().await {
+            log::info!("[AstrBot {} stdout] {}", instance_id_stdout, line);
+            if line.contains("AstrBot 启动完成") {
+                if let Some(sender) = tx.take() {
+                    let _ = sender.send(());
                 }
-                process_manager.remove(instance_id);
-                emit_progress(app_handle, instance_id, "error", &e, 0);
-                Err(AppError::process(e))
             }
         }
-    } else {
-        // Dashboard disabled: use log-based detection
-        let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
-        let mut tx = Some(tx);
-        let instance_id_stdout = instance_id.to_string();
-        let mut stdout_reader = BufReader::new(stdout).lines();
+    });
 
-        tokio::spawn(async move {
-            while let Ok(Some(line)) = stdout_reader.next_line().await {
-                log::info!("[AstrBot {} stdout] {}", instance_id_stdout, line);
-                if line.contains("AstrBot 启动完成") {
-                    if let Some(sender) = tx.take() {
-                        let _ = sender.send(());
-                    }
+    // Wait for startup signal or timeout
+    let timeout = tokio::time::Duration::from_secs(STARTUP_LOG_TIMEOUT_SECS);
+    match tokio::time::timeout(timeout, &mut rx).await {
+        Ok(Ok(())) => {
+            log::info!(
+                "Instance {} started (pid: {}, port: {})",
+                instance_id,
+                pid,
+                port
+            );
+            emit_progress(app_handle, instance_id, "done", "实例已启动", 100);
+            Ok(port)
+        }
+        _ => {
+            log::error!(
+                "Instance {} startup timed out ({}s)",
+                instance_id,
+                STARTUP_LOG_TIMEOUT_SECS
+            );
+            // Avoid killing an unrelated process if PID got reused.
+            if can_signal_expected_process(pid, &executable_path) {
+                if let Err(kill_err) = force_kill(pid) {
+                    log::warn!(
+                        "Failed to kill timed-out instance {}: {}",
+                        instance_id,
+                        kill_err
+                    );
                 }
-            }
-        });
-
-        // Wait for startup signal or timeout
-        let timeout = tokio::time::Duration::from_secs(120);
-        match tokio::time::timeout(timeout, &mut rx).await {
-            Ok(Ok(())) => {
-                log::info!(
-                    "Instance {} started via log detection (pid: {}, dashboard disabled)",
+            } else {
+                log::warn!(
+                    "Skip killing timed-out instance {}: PID {} executable path mismatch (possible PID reuse)",
                     instance_id,
                     pid
                 );
-                emit_progress(app_handle, instance_id, "done", "实例已启动", 100);
-                Ok(port)
             }
-            _ => {
-                let e = "Instance startup timed out (120s)";
-                // Avoid killing an unrelated process if PID got reused.
-                if can_signal_expected_process(pid, &executable_path) {
-                    if let Err(kill_err) = force_kill(pid) {
-                        log::warn!(
-                            "Failed to kill timed-out instance {}: {}",
-                            instance_id,
-                            kill_err
-                        );
-                    }
-                } else {
-                    log::warn!(
-                        "Skip killing timed-out instance {}: PID {} executable path mismatch (possible PID reuse)",
-                        instance_id,
-                        pid
-                    );
-                }
-                process_manager.remove(instance_id);
-                emit_progress(app_handle, instance_id, "error", e, 0);
-                Err(AppError::startup_timeout())
-            }
+            process_manager.remove(instance_id);
+            Err(AppError::startup_timeout())
         }
     }
 }

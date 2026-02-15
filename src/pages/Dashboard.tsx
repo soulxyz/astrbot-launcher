@@ -237,7 +237,7 @@ export default function Dashboard() {
           message.warning('实例不存在或已被删除');
           return;
         }
-        if (!latestInstance.running) {
+        if (latestInstance.state === 'stopped') {
           message.info('实例已停止');
           return;
         }
@@ -308,8 +308,12 @@ export default function Dashboard() {
 
   const handleOpen = useCallback(
     (instance: InstanceStatus) => {
-      if (!instance.running) {
-        message.warning(STATUS_MESSAGES.START_INSTANCE_FIRST);
+      if (instance.state !== 'running') {
+        message.warning('实例未启动完成');
+        return;
+      }
+      if (!instance.dashboard_enabled) {
+        message.warning('Dashboard 已禁用');
         return;
       }
       navigate(`/webui/${instance.id}`);
@@ -349,10 +353,10 @@ export default function Dashboard() {
     },
     {
       title: '状态',
-      dataIndex: 'running',
-      key: 'running',
+      dataIndex: 'state',
+      key: 'state',
       width: 180,
-      render: (_: boolean, record: InstanceStatus) => (
+      render: (_: string, record: InstanceStatus) => (
         <InstanceStatusTag instance={record} deployProgress={deployProgress} />
       ),
     },
@@ -362,7 +366,7 @@ export default function Dashboard() {
       key: 'port',
       width: 80,
       render: (port: number, record: InstanceStatus) => {
-        if (!record.running || !record.dashboard_enabled) return '-';
+        if (record.state === 'stopped') return '-';
         return port;
       },
     },
@@ -400,6 +404,7 @@ export default function Dashboard() {
           <InstanceActions
             instance={record}
             loading={operations[OPERATION_KEYS.instance(record.id)] || false}
+            snapshotReady={initialized && !loading}
             isDeploying={!!isDeploying}
             isDeleting={deleteOpen && instanceToDelete?.id === record.id}
             onStart={handleStart}

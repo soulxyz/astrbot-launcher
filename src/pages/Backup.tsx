@@ -38,7 +38,7 @@ export default function Backup() {
         message.warning('实例不存在或已被删除');
         return;
       }
-      if (latestInstance.running) {
+      if (latestInstance.state !== 'stopped') {
         message.warning('请先停止实例再创建备份');
         return;
       }
@@ -79,7 +79,7 @@ export default function Backup() {
         setSelectedBackup(null);
         return;
       }
-      if (targetInstance.running) {
+      if (targetInstance.state !== 'stopped') {
         message.warning('请先停止实例再恢复备份');
         return;
       }
@@ -137,13 +137,13 @@ export default function Backup() {
     setDeleteOpen(true);
   };
 
-  const stoppedInstances = instances.filter((i) => !i.running);
+  const stoppedInstances = instances.filter((i) => i.state === 'stopped');
 
   // 所有实例的选项，运行中的实例标记为禁用
   const instanceOptions = instances.map((i) => ({
-    label: i.running ? `${i.name} (${i.version}) - 运行中` : `${i.name} (${i.version})`,
+    label: i.state !== 'stopped' ? `${i.name} (${i.version}) - 运行中` : `${i.name} (${i.version})`,
     value: i.id,
-    disabled: i.running,
+    disabled: i.state !== 'stopped',
   }));
 
   const columns = [

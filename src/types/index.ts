@@ -58,13 +58,16 @@ export interface AppSnapshot {
   config: AppConfig;
 }
 
+export type InstanceState = 'stopped' | 'running' | 'unhealthy';
+
 export interface InstanceStatus {
   id: string;
   name: string;
-  running: boolean;
+  state: InstanceState;
   port: number;
   version: string;
   dashboard_enabled: boolean;
+  pid_tracker_not_available: boolean;
   configured_port: number;
 }
 

@@ -179,7 +179,7 @@ export default function Advanced() {
         setConfirmModal(null);
         return;
       }
-      if (latestInstance.running) {
+      if (latestInstance.state !== 'stopped') {
         message.warning('请先停止实例再清空数据');
         return;
       }
@@ -211,7 +211,7 @@ export default function Advanced() {
         setConfirmModal(null);
         return;
       }
-      if (latestInstance.running) {
+      if (latestInstance.state !== 'stopped') {
         message.warning('请先停止实例再清空虚拟环境');
         return;
       }
@@ -260,9 +260,9 @@ export default function Advanced() {
     value: i.id,
   }));
   const stoppedInstanceOptions = instances
-    .filter((i) => !i.running)
+    .filter((i) => i.state === 'stopped')
     .map((i) => ({ label: i.name, value: i.id }));
-  const runningInstances = instances.filter((i) => i.running);
+  const runningInstances = instances.filter((i) => i.state !== 'stopped');
 
   const getConfirmLoading = () => {
     switch (confirmModal) {

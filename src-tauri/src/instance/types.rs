@@ -2,15 +2,18 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::process::InstanceState;
+
 /// Status information for an instance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstanceStatus {
     pub id: String,
     pub name: String,
-    pub running: bool,
+    pub state: InstanceState,
     pub port: u16,
     pub version: String,
     pub dashboard_enabled: bool,
+    pub pid_tracker_not_available: bool,
     pub configured_port: u16,
 }
 

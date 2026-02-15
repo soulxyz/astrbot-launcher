@@ -12,6 +12,7 @@ import type { InstanceStatus } from '../types';
 interface InstanceActionsProps {
   instance: InstanceStatus;
   loading: boolean;
+  snapshotReady: boolean;
   isDeploying: boolean;
   isDeleting: boolean;
   onStart: (id: string) => void;
@@ -25,6 +26,7 @@ interface InstanceActionsProps {
 export function InstanceActions({
   instance,
   loading,
+  snapshotReady,
   isDeploying,
   isDeleting,
   onStart,
@@ -34,9 +36,23 @@ export function InstanceActions({
   onEdit,
   onDelete,
 }: InstanceActionsProps) {
+  const isActive = instance.state !== 'stopped';
+  const canOpenWebUI =
+    snapshotReady && instance.state === 'running' && instance.dashboard_enabled && !loading && !isDeploying;
+
+  const openWebUITitle = !snapshotReady
+    ? '数据加载中'
+    : !instance.dashboard_enabled
+    ? 'Dashboard 已禁用'
+    : instance.state !== 'running'
+      ? '实例未启动完成'
+      : loading || isDeploying
+        ? '操作进行中，请稍后'
+      : '打开 WebUI';
+
   return (
     <Space size="small">
-      {instance.running ? (
+      {isActive ? (
         <>
           <Tooltip title="停止">
             <Button
@@ -54,11 +70,11 @@ export function InstanceActions({
               onClick={() => onRestart(instance.id)}
             />
           </Tooltip>
-          <Tooltip title={instance.dashboard_enabled ? '打开 WebUI' : 'Dashboard 已禁用'}>
+          <Tooltip title={openWebUITitle}>
             <Button
               type="text"
               icon={<GlobalOutlined />}
-              disabled={!instance.dashboard_enabled}
+              disabled={!canOpenWebUI}
               onClick={() => onOpen(instance)}
             />
           </Tooltip>
@@ -77,16 +93,16 @@ export function InstanceActions({
         <Button
           type="text"
           icon={<SettingOutlined />}
-          disabled={instance.running || isDeploying}
+          disabled={isActive || isDeploying}
           onClick={() => onEdit(instance)}
         />
       </Tooltip>
-      <Tooltip title={instance.running ? '请先停止实例' : '删除'}>
+      <Tooltip title='删除'>
         <Button
           type="text"
           danger
           icon={<DeleteOutlined />}
-          disabled={instance.running || isDeploying || isDeleting}
+          disabled={isActive || isDeploying || isDeleting}
           onClick={() => onDelete(instance)}
         />
       </Tooltip>
