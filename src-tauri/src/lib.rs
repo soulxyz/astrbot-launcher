@@ -23,7 +23,7 @@ use tauri::tray::TrayIconBuilder;
 use tauri::Emitter as _;
 use tauri::Manager as _;
 use tauri_plugin_dialog::{DialogExt as _, MessageDialogButtons};
-use tauri_plugin_log::{Target, TargetKind};
+use tauri_plugin_log::{Target, TargetKind, fern};
 use tauri_plugin_updater::UpdaterExt as _;
 #[cfg(target_os = "linux")]
 use webkit2gtk::{HardwareAccelerationPolicy, SettingsExt as _, WebViewExt as _};
@@ -80,6 +80,7 @@ pub fn run() {
                     Target::new(TargetKind::Dispatch(dispatch)),
                 ])
                 .level(log::LevelFilter::Debug)
+                .with_colors(fern::colors::ColoredLevelConfig::default())
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())

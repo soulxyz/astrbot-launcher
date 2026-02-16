@@ -4,45 +4,25 @@ import { ClearOutlined } from '@ant-design/icons';
 import Ansi from 'ansi-to-react';
 import { PageHeader } from '../components';
 import { useAppStore, useLogStore, type LogLevelFilter } from '../stores';
-import type { LogEntry } from '../types';
 
 const { Content } = Layout;
 
-const levelOptions: { label: string; value: LogLevelFilter }[] = [
-  { label: '全部', value: 'all' },
+type LogLevel = Exclude<LogLevelFilter, 'all'>;
+
+const levelOptions: { label: string; value: LogLevel }[] = [
   { label: 'Debug', value: 'debug' },
   { label: 'Info', value: 'info' },
   { label: 'Warn', value: 'warn' },
   { label: 'Error', value: 'error' },
 ];
 
-const levelColor: Record<LogEntry['level'], string> = {
-  debug: '#888',
-  info: '#3c9eed',
-  warn: '#d89614',
-  error: '#e5534b',
-};
-
-const EMPTY_LOGS: LogEntry[] = [];
-
-function formatTime(timestamp: string): string {
-  const d = new Date(timestamp);
-  if (Number.isNaN(d.getTime())) return timestamp;
-  return d.toLocaleTimeString('zh-CN', { hour12: false });
-}
-
-function padLevel(level: string): string {
-  return level.toUpperCase().padEnd(5);
-}
-
 export default function Logs() {
   const instances = useAppStore((s) => s.instances);
-  const logsBySource = useLogStore((s) => s.logsBySource);
   const getFilteredLogs = useLogStore((s) => s.getFilteredLogs);
   const clearLogs = useLogStore((s) => s.clearLogs);
 
   const [source, setSource] = useState<string>('system');
-  const [level, setLevel] = useState<LogLevelFilter>('all');
+  const [level, setLevel] = useState<LogLevel>('info');
   const containerRef = useRef<HTMLElement>(null);
   const shouldAutoScroll = useRef(true);
 
@@ -52,11 +32,10 @@ export default function Logs() {
   }, [instances]);
 
   const effectiveSource = sourceOptions.some((o) => o.value === source) ? source : 'system';
-  const sourceLogs = logsBySource[effectiveSource] ?? EMPTY_LOGS;
-  const logs = useMemo(() => {
-    if (level === 'all') return sourceLogs;
-    return getFilteredLogs(effectiveSource, level);
-  }, [effectiveSource, level, sourceLogs, getFilteredLogs]);
+  const logs = useMemo(
+    () => getFilteredLogs(effectiveSource, level),
+    [effectiveSource, level, getFilteredLogs],
+  );
 
   const handleScroll = () => {
     const el = containerRef.current;
@@ -79,12 +58,14 @@ export default function Logs() {
       <PageHeader title="日志" />
 
       <Flex align="center" gap={8} style={{ marginBottom: 12 }}>
+        <span style={{ color: '#666' }}>来源</span>
         <Select
           style={{ width: 200 }}
           value={effectiveSource}
           options={sourceOptions}
           onChange={setSource}
         />
+        <span style={{ color: '#666' }}>级别</span>
         <Select style={{ width: 120 }} value={level} options={levelOptions} onChange={setLevel} />
         <Flex flex={1} />
         <Button
@@ -122,29 +103,21 @@ export default function Logs() {
               overflowY: 'auto',
               padding: '8px 12px',
               background: '#1a1a2e',
+              color: '#d4d4d4',
               borderRadius: 'inherit',
               maxHeight: 'calc(100vh - 170px)',
               fontFamily:
                 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
               fontSize: 12,
-              lineHeight: 1.7,
+              lineHeight: 1.6,
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
             }}
           >
             <Flex vertical gap={0}>
               {logs.map((entry, i) => (
-                <div
-                  key={`${entry.timestamp}-${i}`}
-                  style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
-                >
-                  <span style={{ color: '#6a6a8a' }}>{formatTime(entry.timestamp)}</span>
-                  {'  '}
-                  <span style={{ color: levelColor[entry.level], fontWeight: 600 }}>
-                    {padLevel(entry.level)}
-                  </span>
-                  {'  '}
-                  <span style={{ color: entry.level === 'error' ? '#f0a0a0' : '#d4d4d4' }}>
-                    <Ansi className="log-message-ansi">{entry.message}</Ansi>
-                  </span>
+                <div key={`${entry.timestamp}-${i}`}>
+                  <Ansi>{entry.message}</Ansi>
                 </div>
               ))}
             </Flex>
