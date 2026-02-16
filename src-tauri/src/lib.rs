@@ -10,6 +10,7 @@ mod instance;
 mod paths;
 mod platform;
 mod process;
+mod sync_utils;
 mod validation;
 
 use std::sync::Arc;
@@ -223,7 +224,6 @@ pub fn run() {
             commands::create_instance,
             commands::delete_instance,
             commands::update_instance,
-            commands::is_instance_deployed,
             commands::start_instance,
             commands::stop_instance,
             commands::restart_instance,

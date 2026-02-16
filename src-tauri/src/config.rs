@@ -1,44 +1,15 @@
 use std::collections::HashMap;
 use std::fs;
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, Result};
 use crate::paths::{config_path, ensure_data_dirs};
+use crate::sync_utils::{lock_mutex_recover, read_lock_recover, write_lock_recover};
 
 static CONFIG_LOCK: Mutex<()> = Mutex::new(());
 static CONFIG_CACHE: OnceLock<RwLock<Arc<AppConfig>>> = OnceLock::new();
-
-fn lock_mutex_recover<'a, T>(lock: &'a Mutex<T>, name: &str) -> MutexGuard<'a, T> {
-    match lock.lock() {
-        Ok(guard) => guard,
-        Err(e) => {
-            log::warn!("{} mutex poisoned, recovering inner state", name);
-            e.into_inner()
-        }
-    }
-}
-
-fn read_lock_recover<'a, T>(lock: &'a RwLock<T>, name: &str) -> RwLockReadGuard<'a, T> {
-    match lock.read() {
-        Ok(guard) => guard,
-        Err(e) => {
-            log::warn!("{} read lock poisoned, recovering inner state", name);
-            e.into_inner()
-        }
-    }
-}
-
-fn write_lock_recover<'a, T>(lock: &'a RwLock<T>, name: &str) -> RwLockWriteGuard<'a, T> {
-    match lock.write() {
-        Ok(guard) => guard,
-        Err(e) => {
-            log::warn!("{} write lock poisoned, recovering inner state", name);
-            e.into_inner()
-        }
-    }
-}
 
 fn load_config_from_disk() -> Result<AppConfig> {
     let path = config_path();

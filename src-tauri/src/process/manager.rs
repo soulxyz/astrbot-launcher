@@ -2,11 +2,13 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use reqwest::Client;
 use tokio::sync::broadcast;
+
+use crate::sync_utils::{read_lock_recover, write_lock_recover};
 
 use super::control::{graceful_shutdown, is_expected_process_alive};
 use super::health::check_health;
@@ -33,26 +35,6 @@ pub struct ProcessManager {
     processes: RwLock<HashMap<String, InstanceProcess>>,
     http_client: Client,
     runtime_events: broadcast::Sender<RuntimeEvent>,
-}
-
-fn read_lock_recover<'a, T>(lock: &'a RwLock<T>, name: &str) -> RwLockReadGuard<'a, T> {
-    match lock.read() {
-        Ok(guard) => guard,
-        Err(e) => {
-            log::warn!("{} read lock poisoned, recovering inner state", name);
-            e.into_inner()
-        }
-    }
-}
-
-fn write_lock_recover<'a, T>(lock: &'a RwLock<T>, name: &str) -> RwLockWriteGuard<'a, T> {
-    match lock.write() {
-        Ok(guard) => guard,
-        Err(e) => {
-            log::warn!("{} write lock poisoned, recovering inner state", name);
-            e.into_inner()
-        }
-    }
 }
 
 impl ProcessManager {

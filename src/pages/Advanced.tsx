@@ -82,34 +82,26 @@ export default function Advanced() {
     }
   }, [config, initialized]);
 
-  const handleCloseToTrayChange = async (value: string) => {
+  const saveSimpleSetting = async (save: () => Promise<void>) => {
     try {
-      await api.saveCloseToTray(value === 'tray');
+      await save();
       await reloadSnapshot({ throwOnError: true });
       message.success('设置已保存');
     } catch (error) {
       handleApiError(error);
     }
+  };
+
+  const handleCloseToTrayChange = async (value: string) => {
+    await saveSimpleSetting(() => api.saveCloseToTray(value === 'tray'));
   };
 
   const handleCheckInstanceUpdateChange = async (checked: boolean) => {
-    try {
-      await api.saveCheckInstanceUpdate(checked);
-      await reloadSnapshot({ throwOnError: true });
-      message.success('设置已保存');
-    } catch (error) {
-      handleApiError(error);
-    }
+    await saveSimpleSetting(() => api.saveCheckInstanceUpdate(checked));
   };
 
   const handlePersistInstanceStateChange = async (checked: boolean) => {
-    try {
-      await api.savePersistInstanceState(checked);
-      await reloadSnapshot({ throwOnError: true });
-      message.success('设置已保存');
-    } catch (error) {
-      handleApiError(error);
-    }
+    await saveSimpleSetting(() => api.savePersistInstanceState(checked));
   };
 
   const handleAutostartChange = async (checked: boolean) => {

@@ -59,14 +59,6 @@ pub fn get_instance_pip_deps_marker_path(instance_id: &str) -> PathBuf {
     get_instance_venv_dir(instance_id).join(".pip_deps_installed")
 }
 
-/// Check if an instance is fully deployed
-pub fn is_instance_deployed(instance_id: &str) -> bool {
-    let core_dir = get_instance_core_dir(instance_id);
-    let venv_dir = get_instance_venv_dir(instance_id);
-    let venv_python = get_venv_python(&venv_dir);
-    core_dir.join("main.py").exists() && venv_python.exists()
-}
-
 /// Get the versions directory.
 pub fn get_versions_dir() -> PathBuf {
     get_data_dir().join("versions")

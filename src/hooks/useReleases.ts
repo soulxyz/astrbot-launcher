@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import { message } from '../antdStatic';
-import { api, GitHubRelease } from '../api';
+import { api } from '../api';
+import type { GitHubRelease } from '../types';
 import { getErrorMessage } from '../utils';
 
 /**

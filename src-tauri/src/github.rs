@@ -1,5 +1,5 @@
 use std::fs;
-use std::sync::{OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{OnceLock, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use reqwest::Client;
@@ -9,6 +9,7 @@ use crate::config::load_config;
 use crate::download::fetch_json;
 use crate::error::Result;
 use crate::paths::{ensure_data_dirs, version_list_cache_path};
+use crate::sync_utils::{read_lock_recover, write_lock_recover};
 
 const ASTRBOT_REPO: &str = "AstrBotDevs/AstrBot";
 const RELEASES_CACHE_TTL_MS: u64 = 8 * 60 * 60 * 1000;
@@ -41,26 +42,6 @@ pub struct GitHubAsset {
 
 fn releases_cache() -> &'static RwLock<Option<ReleasesCache>> {
     RELEASES_CACHE.get_or_init(|| RwLock::new(None))
-}
-
-fn read_lock_recover<'a, T>(lock: &'a RwLock<T>, name: &str) -> RwLockReadGuard<'a, T> {
-    match lock.read() {
-        Ok(guard) => guard,
-        Err(e) => {
-            log::warn!("{} read lock poisoned, recovering inner state", name);
-            e.into_inner()
-        }
-    }
-}
-
-fn write_lock_recover<'a, T>(lock: &'a RwLock<T>, name: &str) -> RwLockWriteGuard<'a, T> {
-    match lock.write() {
-        Ok(guard) => guard,
-        Err(e) => {
-            log::warn!("{} write lock poisoned, recovering inner state", name);
-            e.into_inner()
-        }
-    }
 }
 
 fn now_ms() -> u64 {

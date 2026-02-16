@@ -14,7 +14,6 @@ use crate::download;
 use crate::error::{AppError, Result};
 use crate::github::{self, GitHubRelease};
 use crate::instance::{self, InstanceStatus, ProcessManager};
-use crate::paths;
 use crate::platform;
 
 fn sort_installed_versions_semver(versions: &mut [InstalledVersion]) {
@@ -34,6 +33,25 @@ fn sort_installed_versions_semver(versions: &mut [InstalledVersion]) {
 pub struct AppState {
     pub client: Client,
     pub process_manager: Arc<ProcessManager>,
+}
+
+macro_rules! define_save_config_command {
+    ($fn_name:ident, $param:ident : $ty:ty, $field:ident) => {
+        #[tauri::command]
+        pub async fn $fn_name($param: $ty) -> Result<()> {
+            with_config_mut(move |config| {
+                config.$field = $param;
+                Ok(())
+            })
+        }
+    };
+}
+
+async fn ensure_instance_stopped(state: &State<'_, AppState>, instance_id: &str) -> Result<()> {
+    if state.process_manager.is_running(instance_id).await {
+        return Err(AppError::instance_running());
+    }
+    Ok(())
 }
 
 fn apply_uv_fallback(config: &mut AppConfig) {
@@ -125,29 +143,9 @@ pub async fn save_pypi_mirror(pypi_mirror: String, state: State<'_, AppState>) -
     })
 }
 
-#[tauri::command]
-pub async fn save_close_to_tray(close_to_tray: bool) -> Result<()> {
-    with_config_mut(move |config| {
-        config.close_to_tray = close_to_tray;
-        Ok(())
-    })
-}
-
-#[tauri::command]
-pub async fn save_nodejs_mirror(nodejs_mirror: String) -> Result<()> {
-    with_config_mut(move |config| {
-        config.nodejs_mirror = nodejs_mirror;
-        Ok(())
-    })
-}
-
-#[tauri::command]
-pub async fn save_npm_registry(npm_registry: String) -> Result<()> {
-    with_config_mut(move |config| {
-        config.npm_registry = npm_registry;
-        Ok(())
-    })
-}
+define_save_config_command!(save_close_to_tray, close_to_tray: bool, close_to_tray);
+define_save_config_command!(save_nodejs_mirror, nodejs_mirror: String, nodejs_mirror);
+define_save_config_command!(save_npm_registry, npm_registry: String, npm_registry);
 
 #[tauri::command]
 pub async fn save_use_uv_for_deps(use_uv_for_deps: bool) -> Result<()> {
@@ -172,28 +170,18 @@ pub fn compare_versions(a: String, b: String) -> i32 {
     }
 }
 
-#[tauri::command]
-pub async fn save_check_instance_update(check_instance_update: bool) -> Result<()> {
-    with_config_mut(move |config| {
-        config.check_instance_update = check_instance_update;
-        Ok(())
-    })
-}
-
-#[tauri::command]
-pub async fn save_persist_instance_state(persist_instance_state: bool) -> Result<()> {
-    with_config_mut(move |config| {
-        config.persist_instance_state = persist_instance_state;
-        Ok(())
-    })
-}
+define_save_config_command!(
+    save_check_instance_update,
+    check_instance_update: bool,
+    check_instance_update
+);
+define_save_config_command!(
+    save_persist_instance_state,
+    persist_instance_state: bool,
+    persist_instance_state
+);
 
 // === Components ===
-
-#[tauri::command]
-pub fn is_instance_deployed(instance_id: &str) -> bool {
-    paths::is_instance_deployed(instance_id)
-}
 
 #[tauri::command]
 pub async fn install_component(
@@ -247,25 +235,19 @@ pub async fn uninstall_version(version: String) -> Result<()> {
 
 #[tauri::command]
 pub async fn clear_instance_data(instance_id: String, state: State<'_, AppState>) -> Result<()> {
-    if state.process_manager.is_running(&instance_id).await {
-        return Err(AppError::instance_running());
-    }
+    ensure_instance_stopped(&state, &instance_id).await?;
     instance::clear_instance_data(&instance_id)
 }
 
 #[tauri::command]
 pub async fn clear_instance_venv(instance_id: String, state: State<'_, AppState>) -> Result<()> {
-    if state.process_manager.is_running(&instance_id).await {
-        return Err(AppError::instance_running());
-    }
+    ensure_instance_stopped(&state, &instance_id).await?;
     instance::clear_instance_venv(&instance_id)
 }
 
 #[tauri::command]
 pub async fn clear_pycache(instance_id: String, state: State<'_, AppState>) -> Result<()> {
-    if state.process_manager.is_running(&instance_id).await {
-        return Err(AppError::instance_running());
-    }
+    ensure_instance_stopped(&state, &instance_id).await?;
     instance::clear_pycache(&instance_id)
 }
 
@@ -290,9 +272,7 @@ pub async fn update_instance(
     port: Option<u16>,
     state: State<'_, AppState>,
 ) -> Result<()> {
-    if state.process_manager.is_running(&instance_id).await {
-        return Err(AppError::instance_running());
-    }
+    ensure_instance_stopped(&state, &instance_id).await?;
 
     instance::update_instance(
         &instance_id,
@@ -349,9 +329,7 @@ pub async fn get_instance_port(instance_id: String, state: State<'_, AppState>) 
 
 #[tauri::command]
 pub async fn create_backup(instance_id: String, state: State<'_, AppState>) -> Result<String> {
-    if state.process_manager.is_running(&instance_id).await {
-        return Err(AppError::instance_running());
-    }
+    ensure_instance_stopped(&state, &instance_id).await?;
     backup::create_backup(&instance_id, false)
 }
 

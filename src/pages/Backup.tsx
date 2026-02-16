@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { Button, Space, Table, Modal, Form, Select, Typography, Empty, Tag } from 'antd';
 import { SaveOutlined, DeleteOutlined, ReloadOutlined, ImportOutlined } from '@ant-design/icons';
-import { api, BackupInfo } from '../api';
+import { api } from '../api';
+import type { BackupInfo } from '../types';
 import { message } from '../antdStatic';
 import { useAppStore } from '../stores';
 import { SKIP_OPERATION, useOperationRunner } from '../hooks/useOperationRunner';

@@ -6,7 +6,7 @@ import {
   ReloadOutlined,
   InfoCircleOutlined,
 } from '@ant-design/icons';
-import type { InstalledVersion, GitHubRelease } from '../api';
+import type { InstalledVersion, GitHubRelease } from '../types';
 import { api } from '../api';
 import { message } from '../antdStatic';
 import { useReleases } from '../hooks';

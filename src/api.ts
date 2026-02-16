@@ -1,24 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { GitHubRelease, AppSnapshot } from './types';
 
-// Re-export types for convenience
-export type {
-  AppSnapshot,
-  AppConfig,
-  InstanceConfig,
-  InstanceStatus,
-  InstalledVersion,
-  GitHubRelease,
-  GitHubAsset,
-  BackupMetadata,
-  BackupInfo,
-  DeployProgress,
-  DeployStep,
-  DeployType,
-  ComponentStatus,
-  ComponentsSnapshot,
-} from './types';
-
 export const api = {
   // ========================================
   // Snapshot
@@ -82,8 +64,6 @@ export const api = {
       version: version ?? null,
       port: port ?? null,
     }),
-  isInstanceDeployed: (instanceId: string) =>
-    invoke<boolean>('is_instance_deployed', { instanceId }),
   startInstance: (instanceId: string) => invoke<number>('start_instance', { instanceId }),
   stopInstance: (instanceId: string) => invoke<void>('stop_instance', { instanceId }),
   restartInstance: (instanceId: string) => invoke<number>('restart_instance', { instanceId }),
