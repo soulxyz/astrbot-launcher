@@ -152,17 +152,15 @@ export default function Backup() {
 
   const columns = [
     {
-      title: '状态',
-      key: 'status',
-      width: 90,
-      render: (_: unknown, record: BackupInfo) =>
-        record.corrupted ? <Tag color="error">损坏</Tag> : <Tag color="success">正常</Tag>,
-    },
-    {
       title: '实例名称',
       dataIndex: ['metadata', 'instance_name'],
       key: 'instance_name',
-      render: (v: string, record: BackupInfo) => (record.corrupted ? '-' : v || '-'),
+      render: (v: string, record: BackupInfo) => (
+        <Space size={6}>
+          <span>{record.corrupted ? '-' : v || '-'}</span>
+          {record.corrupted ? <Tag color="error">损坏</Tag> : <Tag color="success">正常</Tag>}
+        </Space>
+      ),
     },
     {
       title: '版本',
