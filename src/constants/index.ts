@@ -44,12 +44,6 @@ export const getDeployStepIndex = (step: DeployStep, isVersionChange: boolean): 
 export const MODAL_CLOSE_DELAY_MS = 1000;
 
 // ========================================
-// UI Constants
-// ========================================
-
-export const TABLE_ACTION_COLUMN_WIDTH = 180;
-
-// ========================================
 // Status Messages
 // ========================================
 
@@ -60,9 +54,6 @@ export const STATUS_MESSAGES = {
   INSTANCE_STARTED: (port: number) => `实例已启动，端口: ${port}`,
   INSTANCE_STOPPED: '实例已停止',
   INSTANCE_RESTARTED: (port: number) => `实例已重启，端口: ${port}`,
-  DATA_RESTORED: (port: number) => `实例已启动，端口: ${port}，数据已恢复`,
-  DATA_RESTORE_FAILED: (error: string) => `数据恢复失败: ${error}`,
-  START_INSTANCE_FIRST: '请先启动实例',
 } as const;
 
 export { OPERATION_KEYS } from './operationKeys';

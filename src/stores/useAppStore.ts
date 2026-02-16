@@ -148,6 +148,7 @@ export const useAppStore = create<AppState>((set, get) => {
 // Event listener management (module-level, outside React)
 let unlistenFns: UnlistenFn[] = [];
 let listenersInitialized = false;
+let listenersInitPromise: Promise<void> | null = null;
 const downloadClearTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 function clearDownloadProgressTimer(id: string) {
@@ -177,44 +178,65 @@ function scheduleDownloadProgressClear(id: string) {
 
 export async function initEventListeners() {
   if (listenersInitialized) return;
-  listenersInitialized = true;
+  if (listenersInitPromise) return listenersInitPromise;
 
-  const unlistenSnapshot = await listen<AppSnapshot>('app-snapshot', (event) => {
-    useAppStore.getState().hydrateSnapshot(event.payload);
-  });
+  listenersInitPromise = (async () => {
+    const localUnlistenFns: UnlistenFn[] = [];
 
-  const unlistenDeploy = await listen<DeployProgress>('deploy-progress', (event) => {
-    const progress = event.payload;
-    const { deployState } = useAppStore.getState();
-
-    if (deployState) {
-      useAppStore.setState({
-        deployState: { ...deployState, progress },
+    try {
+      const unlistenSnapshot = await listen<AppSnapshot>('app-snapshot', (event) => {
+        useAppStore.getState().hydrateSnapshot(event.payload);
       });
+      localUnlistenFns.push(unlistenSnapshot);
 
-      // Auto-close modal after done for all deploy types
-      if (progress.step === 'done') {
-        setTimeout(() => {
-          useAppStore.setState({ deployState: null });
-        }, MODAL_CLOSE_DELAY_MS);
+      const unlistenDeploy = await listen<DeployProgress>('deploy-progress', (event) => {
+        const progress = event.payload;
+        const { deployState } = useAppStore.getState();
+
+        if (deployState) {
+          useAppStore.setState({
+            deployState: { ...deployState, progress },
+          });
+
+          // Auto-close modal after done for all deploy types
+          if (progress.step === 'done') {
+            setTimeout(() => {
+              useAppStore.setState({ deployState: null });
+            }, MODAL_CLOSE_DELAY_MS);
+          }
+        }
+      });
+      localUnlistenFns.push(unlistenDeploy);
+
+      const unlistenDownload = await listen<DownloadProgress>('download-progress', (event) => {
+        const progress = event.payload;
+        useAppStore.setState((state) => ({
+          downloadProgress: { ...state.downloadProgress, [progress.id]: progress },
+        }));
+
+        if (progress.step === 'done' || progress.step === 'error') {
+          scheduleDownloadProgressClear(progress.id);
+        } else {
+          clearDownloadProgressTimer(progress.id);
+        }
+      });
+      localUnlistenFns.push(unlistenDownload);
+
+      unlistenFns = localUnlistenFns;
+      listenersInitialized = true;
+    } catch (error) {
+      for (const unlisten of localUnlistenFns) {
+        unlisten();
       }
+      unlistenFns = [];
+      listenersInitialized = false;
+      throw error;
+    } finally {
+      listenersInitPromise = null;
     }
-  });
+  })();
 
-  const unlistenDownload = await listen<DownloadProgress>('download-progress', (event) => {
-    const progress = event.payload;
-    useAppStore.setState((state) => ({
-      downloadProgress: { ...state.downloadProgress, [progress.id]: progress },
-    }));
-
-    if (progress.step === 'done' || progress.step === 'error') {
-      scheduleDownloadProgressClear(progress.id);
-    } else {
-      clearDownloadProgressTimer(progress.id);
-    }
-  });
-
-  unlistenFns = [unlistenSnapshot, unlistenDeploy, unlistenDownload];
+  return listenersInitPromise;
 }
 
 export function cleanupEventListeners() {

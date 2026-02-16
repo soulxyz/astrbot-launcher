@@ -12,9 +12,8 @@ import {
   Alert,
   Tag,
   Tooltip,
-  Typography,
 } from 'antd';
-import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
+import { PlusOutlined } from '@ant-design/icons';
 import { api } from '../api';
 import { message } from '../antdStatic';
 import type { InstanceStatus, GitHubRelease } from '../types';
@@ -26,11 +25,10 @@ import {
   InstanceActions,
   DeployProgressModal,
   ConfirmModal,
+  PageHeader,
 } from '../components';
 import { handleApiError } from '../utils';
 import { STATUS_MESSAGES, OPERATION_KEYS } from '../constants';
-
-const { Title } = Typography;
 
 type InstanceActionOptions<T> = {
   id: string;
@@ -96,28 +94,47 @@ export default function Dashboard() {
   const [instanceUpdateMap, setInstanceUpdateMap] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
+    let cancelled = false;
+
     if (!config?.check_instance_update || instances.length === 0) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
+      setLatestVersion(null);
       setInstanceUpdateMap({});
       return;
     }
-    api
+
+    void api
       .fetchReleases()
       .then(async (releases: GitHubRelease[]) => {
+        if (cancelled) return;
+
         const stable = releases.find((r) => !r.prerelease);
-        if (!stable) return;
-        const latest = stable.tag_name;
-        setLatestVersion(latest);
-        const map: Record<string, boolean> = {};
-        for (const inst of instances) {
-          const cmp = await api.compareVersions(latest, inst.version);
-          map[inst.id] = cmp > 0;
+        if (!stable) {
+          setLatestVersion(null);
+          setInstanceUpdateMap({});
+          return;
         }
-        setInstanceUpdateMap(map);
+
+        const latest = stable.tag_name;
+        const entries = await Promise.all(
+          instances.map(async (inst) => {
+            const cmp = await api.compareVersions(latest, inst.version);
+            return [inst.id, cmp > 0] as const;
+          })
+        );
+
+        if (!cancelled) {
+          setLatestVersion(latest);
+          setInstanceUpdateMap(Object.fromEntries(entries));
+        }
       })
       .catch(() => {
         // Silently ignore fetch errors
       });
+
+    return () => {
+      cancelled = true;
+    };
   }, [config?.check_instance_update, instances]);
 
   // ========================================
@@ -434,25 +451,11 @@ export default function Dashboard() {
 
   return (
     <>
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          marginBottom: 16,
-        }}
-      >
-        <Title level={4} style={{ margin: 0 }}>
-          实例管理
-        </Title>
-        <Space>
-          <Button
-            icon={<ReloadOutlined />}
-            onClick={() => rebuildSnapshotFromDisk()}
-            loading={loading}
-          >
-            刷新
-          </Button>
+      <PageHeader
+        title="实例管理"
+        onRefresh={() => rebuildSnapshotFromDisk()}
+        refreshLoading={loading}
+        actions={
           <Button
             type="primary"
             icon={<PlusOutlined />}
@@ -461,8 +464,8 @@ export default function Dashboard() {
           >
             创建实例
           </Button>
-        </Space>
-      </div>
+        }
+      />
 
       {initialized && versions.length === 0 && (
         <Alert

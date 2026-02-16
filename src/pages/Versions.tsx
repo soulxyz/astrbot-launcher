@@ -13,10 +13,10 @@ import { useReleases } from '../hooks';
 import { useVersions } from '../hooks/useVersions';
 import { useOperationRunner } from '../hooks/useOperationRunner';
 import { useAppStore } from '../stores';
-import { ConfirmModal } from '../components';
+import { ConfirmModal, PageHeader } from '../components';
 import { OPERATION_KEYS } from '../constants';
 
-const { Title, Text, Paragraph } = Typography;
+const { Text, Paragraph } = Typography;
 
 export default function Versions() {
   const versions = useAppStore((s) => s.versions);
@@ -102,25 +102,11 @@ export default function Versions() {
 
   return (
     <>
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          marginBottom: 16,
-        }}
-      >
-        <Title level={4} style={{ margin: 0 }}>
-          版本管理
-        </Title>
-        <Button
-          icon={<ReloadOutlined />}
-          onClick={() => refreshAll(true)}
-          loading={appLoading || releasesLoading}
-        >
-          刷新
-        </Button>
-      </div>
+      <PageHeader
+        title="版本管理"
+        onRefresh={() => refreshAll(true)}
+        refreshLoading={appLoading || releasesLoading}
+      />
 
       {/* Component Management */}
       {config && (

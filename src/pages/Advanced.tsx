@@ -1,6 +1,4 @@
 import { useState, useEffect } from 'react';
-import { Typography, Button } from 'antd';
-import { ReloadOutlined } from '@ant-design/icons';
 import { enable, disable, isEnabled } from '@tauri-apps/plugin-autostart';
 import { api } from '../api';
 import { message } from '../antdStatic';
@@ -11,11 +9,10 @@ import {
   GeneralSettingsCard,
   SourceSettingsCard,
   TroubleshootingCard,
+  PageHeader,
 } from '../components';
 import { handleApiError } from '../utils';
 import { OPERATION_KEYS } from '../constants';
-
-const { Title } = Typography;
 
 type ConfirmModalType = 'clearData' | 'clearVenv' | 'clearPycache' | null;
 type SaveSettingOptions = {
@@ -321,25 +318,11 @@ export default function Advanced() {
 
   return (
     <>
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          marginBottom: 16,
-        }}
-      >
-        <Title level={4} style={{ margin: 0 }}>
-          高级设置
-        </Title>
-        <Button
-          icon={<ReloadOutlined />}
-          onClick={() => rebuildSnapshotFromDisk()}
-          loading={loading}
-      >
-        刷新
-      </Button>
-      </div>
+      <PageHeader
+        title="高级设置"
+        onRefresh={() => rebuildSnapshotFromDisk()}
+        refreshLoading={loading}
+      />
 
       <GeneralSettingsCard
         config={config}

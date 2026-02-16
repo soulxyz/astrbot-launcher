@@ -1,15 +1,15 @@
 import { useState } from 'react';
 import { Button, Space, Table, Modal, Form, Select, Typography, Empty, Tag } from 'antd';
-import { SaveOutlined, DeleteOutlined, ReloadOutlined, ImportOutlined } from '@ant-design/icons';
+import { SaveOutlined, DeleteOutlined, ImportOutlined } from '@ant-design/icons';
 import { api } from '../api';
 import type { BackupInfo } from '../types';
 import { message } from '../antdStatic';
 import { useAppStore } from '../stores';
 import { SKIP_OPERATION, useOperationRunner } from '../hooks/useOperationRunner';
-import { ConfirmModal } from '../components';
+import { ConfirmModal, PageHeader } from '../components';
 import { OPERATION_KEYS } from '../constants';
 
-const { Title, Text } = Typography;
+const { Text } = Typography;
 
 export default function Backup() {
   const instances = useAppStore((s) => s.instances);
@@ -206,25 +206,11 @@ export default function Backup() {
 
   return (
     <>
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          marginBottom: 16,
-        }}
-      >
-        <Title level={4} style={{ margin: 0 }}>
-          备份管理
-        </Title>
-        <Space>
-          <Button
-            icon={<ReloadOutlined />}
-            onClick={() => rebuildSnapshotFromDisk()}
-            loading={loading}
-          >
-            刷新
-          </Button>
+      <PageHeader
+        title="备份管理"
+        onRefresh={() => rebuildSnapshotFromDisk()}
+        refreshLoading={loading}
+        actions={
           <Button
             type="primary"
             icon={<SaveOutlined />}
@@ -233,8 +219,8 @@ export default function Backup() {
           >
             创建备份
           </Button>
-        </Space>
-      </div>
+        }
+      />
 
       <Table
         dataSource={backups}

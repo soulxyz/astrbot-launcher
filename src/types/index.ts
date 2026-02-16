@@ -169,10 +169,3 @@ export interface StepItem {
   key: DeployStep;
   title: string;
 }
-
-export interface ConfirmModalConfig {
-  title: string;
-  content: string;
-  onOk: () => Promise<void>;
-  danger?: boolean;
-}
