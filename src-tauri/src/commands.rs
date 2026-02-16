@@ -234,8 +234,11 @@ pub async fn reinstall_component(
 // === GitHub ===
 
 #[tauri::command]
-pub async fn fetch_releases(state: State<'_, AppState>) -> Result<Vec<GitHubRelease>> {
-    github::fetch_releases(&state.client).await
+pub async fn fetch_releases(
+    state: State<'_, AppState>,
+    force_refresh: Option<bool>,
+) -> Result<Vec<GitHubRelease>> {
+    github::fetch_releases(&state.client, force_refresh.unwrap_or(false)).await
 }
 
 // === Version Management ===

@@ -17,6 +17,11 @@ pub fn config_path() -> PathBuf {
     get_data_dir().join("config.toml")
 }
 
+/// Get the path to the releases cache file.
+pub fn version_list_cache_path() -> PathBuf {
+    get_data_dir().join("version_list.json")
+}
+
 /// Ensure all required data directories exist.
 pub fn ensure_data_dirs() -> Result<()> {
     let base = get_data_dir();

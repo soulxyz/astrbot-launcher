@@ -1,11 +1,25 @@
+use std::fs;
+use std::sync::{OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 use crate::config::load_config;
 use crate::download::fetch_json;
 use crate::error::Result;
+use crate::paths::{ensure_data_dirs, version_list_cache_path};
 
 const ASTRBOT_REPO: &str = "AstrBotDevs/AstrBot";
+const RELEASES_CACHE_TTL_MS: u64 = 8 * 60 * 60 * 1000;
+
+static RELEASES_CACHE: OnceLock<RwLock<Option<ReleasesCache>>> = OnceLock::new();
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ReleasesCache {
+    releases: Vec<GitHubRelease>,
+    fetched_at_ms: u64,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitHubRelease {
@@ -23,6 +37,103 @@ pub struct GitHubAsset {
     pub name: String,
     pub browser_download_url: String,
     pub size: u64,
+}
+
+fn releases_cache() -> &'static RwLock<Option<ReleasesCache>> {
+    RELEASES_CACHE.get_or_init(|| RwLock::new(None))
+}
+
+fn read_lock_recover<'a, T>(lock: &'a RwLock<T>, name: &str) -> RwLockReadGuard<'a, T> {
+    match lock.read() {
+        Ok(guard) => guard,
+        Err(e) => {
+            log::warn!("{} read lock poisoned, recovering inner state", name);
+            e.into_inner()
+        }
+    }
+}
+
+fn write_lock_recover<'a, T>(lock: &'a RwLock<T>, name: &str) -> RwLockWriteGuard<'a, T> {
+    match lock.write() {
+        Ok(guard) => guard,
+        Err(e) => {
+            log::warn!("{} write lock poisoned, recovering inner state", name);
+            e.into_inner()
+        }
+    }
+}
+
+fn now_ms() -> u64 {
+    let elapsed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+
+    match u64::try_from(elapsed) {
+        Ok(ms) => ms,
+        Err(_) => u64::MAX,
+    }
+}
+
+fn is_cache_expired(fetched_at_ms: u64) -> bool {
+    now_ms().saturating_sub(fetched_at_ms) >= RELEASES_CACHE_TTL_MS
+}
+
+fn load_releases_cache_from_disk() -> Option<ReleasesCache> {
+    let path = version_list_cache_path();
+    if !path.exists() {
+        return None;
+    }
+
+    let content = match fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(e) => {
+            log::warn!("Failed to read releases cache from {:?}: {}", path, e);
+            return None;
+        }
+    };
+
+    match serde_json::from_str::<ReleasesCache>(&content) {
+        Ok(cache) => Some(cache),
+        Err(e) => {
+            log::warn!("Failed to parse releases cache from {:?}: {}", path, e);
+            None
+        }
+    }
+}
+
+fn save_releases_cache_to_disk(cache: &ReleasesCache) {
+    if let Err(e) = ensure_data_dirs() {
+        log::warn!(
+            "Failed to ensure data dirs before saving releases cache: {}",
+            e
+        );
+        return;
+    }
+
+    let path = version_list_cache_path();
+    let content = match serde_json::to_string_pretty(cache) {
+        Ok(content) => content,
+        Err(e) => {
+            log::warn!("Failed to serialize releases cache: {}", e);
+            return;
+        }
+    };
+
+    if let Err(e) = fs::write(&path, content) {
+        log::warn!("Failed to write releases cache to {:?}: {}", path, e);
+    }
+}
+
+async fn fetch_releases_remote(client: &Client) -> Result<Vec<GitHubRelease>> {
+    let config = load_config()?;
+    let url = build_api_url(&config.github_proxy);
+    fetch_json(client, &url).await
+}
+
+pub fn init_releases_cache() {
+    let loaded = load_releases_cache_from_disk();
+    *write_lock_recover(releases_cache(), "RELEASES_CACHE") = loaded;
 }
 
 /// Build the API URL, optionally using a GitHub proxy.
@@ -53,10 +164,38 @@ pub fn build_download_url(proxy: &str, tag: &str) -> String {
     wrap_with_proxy(proxy, &raw)
 }
 
-pub async fn fetch_releases(client: &Client) -> Result<Vec<GitHubRelease>> {
-    let config = load_config()?;
-    let url = build_api_url(&config.github_proxy);
-    fetch_json(client, &url).await
+pub async fn fetch_releases(client: &Client, force_refresh: bool) -> Result<Vec<GitHubRelease>> {
+    let cached = read_lock_recover(releases_cache(), "RELEASES_CACHE").clone();
+
+    if !force_refresh {
+        if let Some(cache) = &cached {
+            if !is_cache_expired(cache.fetched_at_ms) {
+                return Ok(cache.releases.clone());
+            }
+        }
+    }
+
+    match fetch_releases_remote(client).await {
+        Ok(releases) => {
+            let cache = ReleasesCache {
+                releases: releases.clone(),
+                fetched_at_ms: now_ms(),
+            };
+            *write_lock_recover(releases_cache(), "RELEASES_CACHE") = Some(cache.clone());
+            save_releases_cache_to_disk(&cache);
+            Ok(releases)
+        }
+        Err(err) => {
+            if let Some(cache) = cached {
+                log::warn!(
+                    "Failed to refresh releases, fallback to stale cache: {}",
+                    err
+                );
+                return Ok(cache.releases);
+            }
+            Err(err)
+        }
+    }
 }
 
 /// Fetch python-build-standalone releases with full asset information.

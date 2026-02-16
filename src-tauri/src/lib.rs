@@ -42,6 +42,7 @@ pub fn run() {
 
     paths::ensure_data_dirs().expect("Failed to create data directories");
     component::migrate_legacy_python_dirs();
+    github::init_releases_cache();
 
     let process_manager = Arc::new(ProcessManager::new());
     let pm_for_exit = Arc::clone(&process_manager);
