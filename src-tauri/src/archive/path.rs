@@ -16,8 +16,13 @@ fn first_segment(path: &str) -> Option<&str> {
     path.split('/').next()
 }
 
-/// Convert an archive entry path to a relative PathBuf, rejecting empty or traversal paths.
+/// Convert an archive entry path to a relative PathBuf, rejecting empty, traversal,
+/// or control-character-containing paths.
 pub(crate) fn parse_entry_rel_path(raw: &str) -> Option<PathBuf> {
+    if raw.chars().any(|c| c.is_control()) {
+        return None;
+    }
+
     let normalized = normalize_entry_path(raw);
     let first = first_segment(&normalized)?;
     if first.is_empty() || has_windows_drive_prefix(&normalized) {
