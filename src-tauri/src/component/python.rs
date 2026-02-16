@@ -115,8 +115,7 @@ pub async fn pip_install_requirements(
     args.push(default_index);
 
     let mut cmd = Command::new(venv_python);
-    cmd.args(&args)
-        .env_remove("PYTHONHOME");
+    cmd.args(&args).env_remove("PYTHONHOME");
 
     #[cfg(target_os = "windows")]
     {

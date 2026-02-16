@@ -54,7 +54,11 @@ pub async fn deploy_instance_with_version(
     app_handle: &AppHandle,
 ) -> Result<()> {
     validate_instance_id(instance_id)?;
-    log::debug!("Deploying instance {} with version {}", instance_id, version);
+    log::debug!(
+        "Deploying instance {} with version {}",
+        instance_id,
+        version
+    );
 
     let config = load_config()?;
     let installed = config

@@ -190,7 +190,11 @@ pub async fn update_instance(
     };
 
     if let Some(ref new_version) = new_version {
-        log::info!("Updating instance {} to version {}", instance_id, new_version);
+        log::info!(
+            "Updating instance {} to version {}",
+            instance_id,
+            new_version
+        );
         // Version change
 
         // Backup

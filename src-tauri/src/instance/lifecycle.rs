@@ -1,11 +1,13 @@
 //! Instance lifecycle management (start/stop/restart).
 
 use std::path::PathBuf;
+use std::process::ExitStatus;
 use std::sync::Arc;
 
 use tauri::AppHandle;
 use tokio::io::{AsyncBufReadExt as _, BufReader};
 use tokio::process::Command;
+use tokio::sync::{mpsc, oneshot};
 
 use super::crud::is_dashboard_enabled;
 use super::deploy::{deploy_instance, emit_progress};
@@ -139,12 +141,10 @@ pub async fn start_instance(
         cmd.process_group(0);
     }
 
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| {
-            log::error!("Failed to spawn instance {}: {}", instance_id, e);
-            AppError::process(format!("Failed to start instance: {}", e))
-        })?;
+    let mut child = cmd.spawn().map_err(|e| {
+        log::error!("Failed to spawn instance {}: {}", instance_id, e);
+        AppError::process(format!("Failed to start instance: {}", e))
+    })?;
 
     let pid = child
         .id()
@@ -179,20 +179,33 @@ pub async fn start_instance(
         }
     });
 
-    // Wait for child process in background
+    // Wait for child process in background and report early-exit signal
     let instance_id_wait = instance_id.to_string();
     let process_manager_for_wait = Arc::clone(&process_manager);
     let expected_pid = pid;
+    let (exit_tx, mut exit_rx) = oneshot::channel::<std::result::Result<ExitStatus, String>>();
     tokio::spawn(async move {
-        let _ = child.wait().await;
-        log::info!("Instance {} process exited", instance_id_wait);
+        let wait_result = child
+            .wait()
+            .await
+            .map_err(|e| format!("Failed to wait for process exit: {}", e));
+        match &wait_result {
+            Ok(status) => log::info!(
+                "Instance {} process exited (status: {})",
+                instance_id_wait,
+                status
+            ),
+            Err(err) => log::error!("Instance {} wait failed: {}", instance_id_wait, err),
+        }
+        let _ = exit_tx.send(wait_result);
         // Only mark the PID as exited; the runtime monitor handles cleanup.
         process_manager_for_wait.mark_pid_exited(&instance_id_wait, expected_pid);
     });
 
     // Unified startup detection via log output
-    let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
-    let mut tx = Some(tx);
+    let (startup_tx, mut startup_rx) = mpsc::unbounded_channel::<()>();
+    // Keep one sender in scope so receiver does not close early if stdout ends.
+    let _startup_tx_guard = startup_tx.clone();
     let instance_id_stdout = instance_id.to_string();
     let mut stdout_reader = BufReader::new(stdout).lines();
 
@@ -200,17 +213,26 @@ pub async fn start_instance(
         while let Ok(Some(line)) = stdout_reader.next_line().await {
             log_channel::emit_log(&instance_id_stdout, "info", &line);
             if line.contains("AstrBot 启动完成") {
-                if let Some(sender) = tx.take() {
-                    let _ = sender.send(());
-                }
+                let _ = startup_tx.send(());
+                break;
             }
         }
     });
 
-    // Wait for startup signal or timeout
-    let timeout = tokio::time::Duration::from_secs(STARTUP_LOG_TIMEOUT_SECS);
-    match tokio::time::timeout(timeout, &mut rx).await {
-        Ok(Ok(())) => {
+    // Wait for startup signal, process early-exit, or timeout.
+    let timeout = tokio::time::sleep(tokio::time::Duration::from_secs(STARTUP_LOG_TIMEOUT_SECS));
+    tokio::pin!(timeout);
+    tokio::select! {
+        biased;
+        startup_signal = startup_rx.recv() => {
+            if startup_signal.is_none() {
+                log::error!("Instance {} startup log stream closed unexpectedly", instance_id);
+                process_manager.remove(instance_id);
+                return Err(AppError::process(
+                    "Failed to detect startup completion from log stream",
+                ));
+            }
+
             log::info!(
                 "Instance {} started (pid: {}, port: {})",
                 instance_id,
@@ -220,7 +242,23 @@ pub async fn start_instance(
             emit_progress(app_handle, instance_id, "done", "实例已启动", 100);
             Ok(port)
         }
-        _ => {
+        exit_result = &mut exit_rx => {
+            let detail = match exit_result {
+                Ok(Ok(status)) => format!(
+                    "Instance exited before startup completed (exit status: {})",
+                    status
+                ),
+                Ok(Err(wait_err)) => format!(
+                    "Instance exited before startup completed ({})",
+                    wait_err
+                ),
+                Err(_) => "Instance exited before startup completed".to_string(),
+            };
+            log::error!("Instance {} failed to start: {}", instance_id, detail);
+            process_manager.remove(instance_id);
+            Err(AppError::process(detail))
+        }
+        _ = &mut timeout => {
             log::error!(
                 "Instance {} startup timed out ({}s)",
                 instance_id,
