@@ -168,13 +168,17 @@ export default function Versions() {
               const reinstallKey = OPERATION_KEYS.reinstallComponent(comp.id);
               const isInstalling = operations[installKey] || false;
               const isReinstalling = operations[reinstallKey] || false;
+              const isComponentOperating = isInstalling || isReinstalling;
+              // During reinstall, backend may transiently report installed=false while files are replaced.
+              // Keep UI in "installed/reinstall" branch to avoid button type flipping on route switches.
+              const showAsInstalled = comp.installed || isReinstalling;
               const percent = getProgressPercent(comp.id);
               const downloading = isDownloading(comp.id);
 
               return (
                 <List.Item
                   actions={
-                    comp.installed
+                    showAsInstalled
                       ? [
                           downloading && (
                             <Progress
@@ -190,7 +194,8 @@ export default function Versions() {
                             <Button
                               type="text"
                               icon={<ReloadOutlined />}
-                              loading={isReinstalling}
+                              loading={isComponentOperating}
+                              disabled={isComponentOperating}
                               onClick={() => runComponentInstallAction(comp.id, 'reinstall')}
                             />
                           </Tooltip>,
@@ -210,7 +215,8 @@ export default function Versions() {
                             type="primary"
                             size="small"
                             icon={<DownloadOutlined />}
-                            loading={isInstalling}
+                            loading={isComponentOperating}
+                            disabled={isComponentOperating}
                             onClick={() => runComponentInstallAction(comp.id, 'install')}
                             key="install"
                           >
@@ -223,8 +229,8 @@ export default function Versions() {
                     title={
                       <Space>
                         {comp.display_name}
-                        <Tag color={comp.installed ? 'green' : undefined}>
-                          {comp.installed ? '已安装' : '未安装'}
+                        <Tag color={showAsInstalled ? 'green' : undefined}>
+                          {showAsInstalled ? '已安装' : '未安装'}
                         </Tag>
                       </Space>
                     }
