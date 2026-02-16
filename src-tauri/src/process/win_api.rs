@@ -14,7 +14,8 @@ use windows::Win32::NetworkManagement::IpHelper::{
 };
 use windows::Win32::Networking::WinSock::{AF_INET, AF_INET6};
 use windows::Win32::System::Threading::{
-    GetExitCodeProcess, OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+    GetExitCodeProcess, OpenProcess, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION,
+    QueryFullProcessImageNameW,
 };
 
 /// Maximum number of retries when the TCP table changes between size query and data fetch.
@@ -161,7 +162,7 @@ pub fn get_process_executable_path(pid: u32) -> Option<PathBuf> {
         let mut path_len = capacity;
 
         let ok = unsafe {
-            QueryFullProcessImageNameW(handle, 0, PWSTR(path_buf.as_mut_ptr()), &mut path_len)
+            QueryFullProcessImageNameW(handle, PROCESS_NAME_FORMAT(0), PWSTR(path_buf.as_mut_ptr()), &mut path_len)
                 .is_ok()
         };
         if ok {
