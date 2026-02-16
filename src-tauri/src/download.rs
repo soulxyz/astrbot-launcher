@@ -13,7 +13,12 @@ use crate::github::{get_source_archive_url, GitHubRelease};
 use crate::paths::get_versions_dir;
 use crate::validation::resolve_version_zip_path;
 
-const USER_AGENT: &str = "astrbot-launcher";
+const USER_AGENT: &str = concat!(
+    env!("CARGO_PKG_NAME"),
+    "/",
+    env!("CARGO_PKG_VERSION"),
+    " (+https://github.com/raven95676/astrbot-launcher)"
+);
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DownloadProgress {
@@ -121,9 +126,7 @@ pub async fn download_file(
                     }
                 })
                 .unwrap_or(0);
-            if now.duration_since(last_emit).as_millis() >= 100
-                || current_percent >= last_percent + 1
-            {
+            if now.duration_since(last_emit).as_millis() >= 100 || current_percent > last_percent {
                 emit_download_progress(
                     o,
                     downloaded,
