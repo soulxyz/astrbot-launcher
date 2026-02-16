@@ -91,7 +91,7 @@ pub async fn download_file(
     let total = resp.content_length();
     let mut downloaded: u64 = 0;
     let mut last_emit = std::time::Instant::now();
-    let mut last_percent: u64 = 0;
+    let mut last_percent: u8 = 0;
 
     if let Some(o) = opts {
         emit_download_progress(
@@ -117,15 +117,7 @@ pub async fn download_file(
 
         if let Some(o) = opts {
             let now = std::time::Instant::now();
-            let current_percent = total
-                .map(|t| {
-                    if t > 0 {
-                        downloaded.saturating_mul(99).saturating_div(t)
-                    } else {
-                        0
-                    }
-                })
-                .unwrap_or(0);
+            let current_percent = compute_percent_0_99(downloaded, total).unwrap_or(0);
             if now.duration_since(last_emit).as_millis() >= 100 || current_percent > last_percent {
                 emit_download_progress(
                     o,

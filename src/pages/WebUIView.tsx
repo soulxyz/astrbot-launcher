@@ -1,10 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Button, Spin } from 'antd';
-import { message } from '../antdStatic';
 import { ArrowLeftOutlined } from '@ant-design/icons';
 import { api } from '../api';
-import { getErrorMessage } from '../utils';
+import { handleApiError } from '../utils';
 
 export default function WebUIView() {
   const { instanceId } = useParams<{ instanceId: string }>();
@@ -21,7 +20,7 @@ export default function WebUIView() {
         setLoading(false);
       })
       .catch((e: unknown) => {
-        message.error(getErrorMessage(e));
+        handleApiError(e);
         setLoading(false);
       });
   }, [instanceId]);

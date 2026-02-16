@@ -1,5 +1,6 @@
 export const OPERATION_KEYS = {
   instance: (instanceId: string) => `instance:${instanceId}`,
+  createInstance: 'create-instance',
   deleteInstance: 'delete',
 
   installVersion: (tag: string) => `install:${tag}`,
@@ -15,6 +16,10 @@ export const OPERATION_KEYS = {
   advancedSavePypiMirror: 'adv:save-pypi-mirror',
   advancedSaveNodejsMirror: 'adv:save-nodejs-mirror',
   advancedSaveNpmRegistry: 'adv:save-npm-registry',
+  advancedSaveCloseToTray: 'adv:save-close-to-tray',
+  advancedSaveCheckInstanceUpdate: 'adv:save-check-instance-update',
+  advancedSavePersistInstanceState: 'adv:save-persist-instance-state',
+  advancedSaveAutostart: 'adv:save-autostart',
   advancedSaveUseUvForDeps: 'adv:save-use-uv-for-deps',
   advancedClearData: (instanceId: string) => `adv:data-${instanceId}`,
   advancedClearVenv: (instanceId: string) => `adv:venv-${instanceId}`,

@@ -79,40 +79,46 @@ export default function Advanced() {
     }
   }, [config, initialized]);
 
-  const saveSimpleSetting = async (save: () => Promise<void>) => {
-    try {
-      await save();
-      await reloadSnapshot({ throwOnError: true });
-      message.success('设置已保存');
-    } catch (error) {
-      handleApiError(error);
-    }
-  };
-
   const handleCloseToTrayChange = async (value: string) => {
-    await saveSimpleSetting(() => api.saveCloseToTray(value === 'tray'));
+    await handleSaveSetting({
+      key: OPERATION_KEYS.advancedSaveCloseToTray,
+      save: () => api.saveCloseToTray(value === 'tray'),
+      successMessage: '设置已保存',
+    });
   };
 
   const handleCheckInstanceUpdateChange = async (checked: boolean) => {
-    await saveSimpleSetting(() => api.saveCheckInstanceUpdate(checked));
+    await handleSaveSetting({
+      key: OPERATION_KEYS.advancedSaveCheckInstanceUpdate,
+      save: () => api.saveCheckInstanceUpdate(checked),
+      successMessage: '设置已保存',
+    });
   };
 
   const handlePersistInstanceStateChange = async (checked: boolean) => {
-    await saveSimpleSetting(() => api.savePersistInstanceState(checked));
+    await handleSaveSetting({
+      key: OPERATION_KEYS.advancedSavePersistInstanceState,
+      save: () => api.savePersistInstanceState(checked),
+      successMessage: '设置已保存',
+    });
   };
 
   const handleAutostartChange = async (checked: boolean) => {
-    try {
-      if (checked) {
-        await enable();
-      } else {
-        await disable();
-      }
-      setAutostart(checked);
-      message.success('设置已保存');
-    } catch (error) {
-      handleApiError(error);
-    }
+    await runOperation({
+      key: OPERATION_KEYS.advancedSaveAutostart,
+      reloadAfter: false,
+      task: async () => {
+        if (checked) {
+          await enable();
+        } else {
+          await disable();
+        }
+      },
+      onSuccess: () => {
+        setAutostart(checked);
+        message.success('设置已保存');
+      },
+    });
   };
 
   const handleSaveSetting = async ({

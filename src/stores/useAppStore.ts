@@ -1,7 +1,6 @@
 import { create } from 'zustand';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { api } from '../api';
-import { message } from '../antdStatic';
 import type {
   InstalledVersion,
   InstanceStatus,
@@ -13,7 +12,7 @@ import type {
   ComponentStatus,
   DownloadProgress,
 } from '../types';
-import { getErrorMessage } from '../utils';
+import { handleApiError } from '../utils';
 import { MODAL_CLOSE_DELAY_MS } from '../constants';
 
 interface AppState {
@@ -61,13 +60,7 @@ export const useAppStore = create<AppState>((set, get) => {
       if (options?.throwOnError) {
         throw e;
       }
-
-      const msg = getErrorMessage(e);
-      if (message?.error) {
-        message.error(msg);
-      } else {
-        console.error(msg);
-      }
+      handleApiError(e);
     } finally {
       set({ loading: false });
     }

@@ -9,7 +9,6 @@ interface DeployProgressModalProps {
   instanceName: string;
   deployType: DeployType;
   progress: DeployProgress | null;
-  onCancel?: () => void;
 }
 
 export function DeployProgressModal({

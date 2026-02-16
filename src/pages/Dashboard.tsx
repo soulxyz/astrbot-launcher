@@ -1,8 +1,7 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Button,
-  Space,
   Table,
   Modal,
   Form,
@@ -10,8 +9,6 @@ import {
   InputNumber,
   Select,
   Alert,
-  Tag,
-  Tooltip,
 } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { api } from '../api';
@@ -21,14 +18,13 @@ import { useInstanceUpgrade } from '../hooks';
 import { SKIP_OPERATION, useOperationRunner } from '../hooks/useOperationRunner';
 import { useAppStore } from '../stores';
 import {
-  InstanceStatusTag,
-  InstanceActions,
   DeployProgressModal,
   ConfirmModal,
   PageHeader,
 } from '../components';
 import { handleApiError } from '../utils';
 import { STATUS_MESSAGES, OPERATION_KEYS } from '../constants';
+import { buildDashboardColumns } from './dashboardColumns';
 
 type InstanceActionOptions<T> = {
   id: string;
@@ -143,24 +139,26 @@ export default function Dashboard() {
 
   const handleCreate = useCallback(
     async (values: { name: string; version: string; port?: number }) => {
-      try {
-        await reloadSnapshot();
-        const { versions: latestVersions } = useAppStore.getState();
-        if (!latestVersions.some((v) => v.version === values.version)) {
-          message.warning('所选版本不存在，请先刷新后重试');
-          return;
-        }
+      await runOperation({
+        key: OPERATION_KEYS.createInstance,
+        reloadBefore: true,
+        task: async () => {
+          const { versions: latestVersions } = useAppStore.getState();
+          if (!latestVersions.some((v) => v.version === values.version)) {
+            message.warning('所选版本不存在，请先刷新后重试');
+            return SKIP_OPERATION;
+          }
 
-        await api.createInstance(values.name, values.version, values.port ?? 0);
-        await reloadSnapshot({ throwOnError: true });
-        message.success(STATUS_MESSAGES.INSTANCE_CREATED);
-        setCreateOpen(false);
-        createForm.resetFields();
-      } catch (error) {
-        handleApiError(error);
-      }
+          await api.createInstance(values.name, values.version, values.port ?? 0);
+        },
+        onSuccess: () => {
+          message.success(STATUS_MESSAGES.INSTANCE_CREATED);
+          setCreateOpen(false);
+          createForm.resetFields();
+        },
+      });
     },
-    [createForm, reloadSnapshot]
+    [createForm, runOperation]
   );
 
   const handleEdit = useCallback(
@@ -190,22 +188,16 @@ export default function Dashboard() {
         // Use the upgrade hook for version changes
         await upgradeInstance(latestInstance, values.name, values.version);
       } else {
-        // Name-only or port change
-        try {
-          await api.updateInstance(
-            latestInstance.id,
-            values.name,
-            values.version,
-            values.port ?? 0
-          );
-          await reloadSnapshot({ throwOnError: true });
-          message.success(STATUS_MESSAGES.INSTANCE_UPDATED);
-        } catch (error) {
-          handleApiError(error);
-        }
+        await runOperation({
+          key: OPERATION_KEYS.instance(latestInstance.id),
+          task: () => api.updateInstance(latestInstance.id, values.name, values.version, values.port ?? 0),
+          onSuccess: () => {
+            message.success(STATUS_MESSAGES.INSTANCE_UPDATED);
+          },
+        });
       }
     },
-    [editingInstance, upgradeInstance, reloadSnapshot]
+    [editingInstance, upgradeInstance, reloadSnapshot, runOperation]
   );
 
   const executeInstanceAction = useCallback(
@@ -361,84 +353,41 @@ export default function Dashboard() {
     setDeleteOpen(true);
   }, []);
 
-  // ========================================
-  // Table Configuration
-  // ========================================
-
-  const columns = [
-    {
-      title: '名称',
-      dataIndex: 'name',
-      key: 'name',
-      render: (text: string) => <strong>{text}</strong>,
-    },
-    {
-      title: '状态',
-      dataIndex: 'state',
-      key: 'state',
-      width: 180,
-      render: (_: string, record: InstanceStatus) => (
-        <InstanceStatusTag instance={record} deployProgress={deployProgress} />
-      ),
-    },
-    {
-      title: '端口',
-      dataIndex: 'port',
-      key: 'port',
-      width: 80,
-      render: (port: number, record: InstanceStatus) => {
-        if (record.state === 'stopped') return '-';
-        return port;
-      },
-    },
-    {
-      title: '版本',
-      dataIndex: 'version',
-      key: 'version',
-      width: 150,
-      ellipsis: true,
-      render: (version: string, record: InstanceStatus) => (
-        <Space size={4}>
-          <span>{version}</span>
-          {instanceUpdateMap[record.id] && latestVersion && (
-            <Tooltip title={`最新版本: ${latestVersion}`}>
-              <Tag color="blue" style={{ marginInlineEnd: 0 }}>
-                可更新
-              </Tag>
-            </Tooltip>
-          )}
-        </Space>
-      ),
-    },
-    {
-      title: '操作',
-      key: 'action',
-      width: 240,
-      render: (_: unknown, record: InstanceStatus) => {
-        const isDeploying =
-          deployProgress &&
-          deployProgress.instance_id === record.id &&
-          deployProgress.step !== 'done' &&
-          deployProgress.step !== 'error';
-
-        return (
-          <InstanceActions
-            instance={record}
-            loading={operations[OPERATION_KEYS.instance(record.id)] || false}
-            snapshotReady={initialized && !loading}
-            isDeploying={!!isDeploying}
-            isDeleting={deleteOpen && instanceToDelete?.id === record.id}
-            onStart={handleStart}
-            onStop={handleStop}
-            onRestart={handleRestart}
-            onOpen={handleOpen}
-            onEdit={openEditModal}
-            onDelete={openDeleteModal}
-          />
-        );
-      },
-    },
-  ];
+  const columns = useMemo(
+    () =>
+      buildDashboardColumns({
+        deployProgress,
+        instanceUpdateMap,
+        latestVersion,
+        operations,
+        initialized,
+        loading,
+        deleteOpen,
+        instanceToDeleteId: instanceToDelete?.id,
+        onStart: handleStart,
+        onStop: handleStop,
+        onRestart: handleRestart,
+        onOpen: handleOpen,
+        onEdit: openEditModal,
+        onDelete: openDeleteModal,
+      }),
+    [
+      deployProgress,
+      instanceUpdateMap,
+      latestVersion,
+      operations,
+      initialized,
+      loading,
+      deleteOpen,
+      instanceToDelete?.id,
+      handleStart,
+      handleStop,
+      handleRestart,
+      handleOpen,
+      openEditModal,
+      openDeleteModal,
+    ]
+  );
 
   const versionOptions = versions.map((v) => ({
     label: v.version,

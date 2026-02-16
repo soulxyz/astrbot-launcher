@@ -1,6 +1,7 @@
 import { Tag, Space, Tooltip } from 'antd';
 import { WarningOutlined } from '@ant-design/icons';
 import type { InstanceStatus, DeployProgress } from '../types';
+import { isInstanceDeploying } from '../utils';
 
 interface InstanceStatusTagProps {
   instance: InstanceStatus;
@@ -8,11 +9,7 @@ interface InstanceStatusTagProps {
 }
 
 export function InstanceStatusTag({ instance, deployProgress }: InstanceStatusTagProps) {
-  const isDeploying =
-    deployProgress &&
-    deployProgress.instance_id === instance.id &&
-    deployProgress.step !== 'done' &&
-    deployProgress.step !== 'error';
+  const isDeploying = isInstanceDeploying(instance.id, deployProgress);
 
   if (isDeploying) {
     return <Tag color="processing">部署中</Tag>;

@@ -1,8 +1,7 @@
 import { useState, useCallback } from 'react';
-import { message } from '../antdStatic';
 import { api } from '../api';
 import type { GitHubRelease } from '../types';
-import { getErrorMessage } from '../utils';
+import { handleApiError } from '../utils';
 
 /**
  * Hook for fetching GitHub releases.
@@ -20,7 +19,7 @@ export function useReleases() {
       setReleases(r);
       return r;
     } catch (e: unknown) {
-      message.error(getErrorMessage(e));
+      handleApiError(e);
       return [];
     } finally {
       setLoading(false);

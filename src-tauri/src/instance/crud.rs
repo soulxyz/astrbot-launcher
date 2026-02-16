@@ -25,6 +25,35 @@ fn ensure_version_installed(config: &AppConfig, version: &str) -> Result<()> {
     }
 }
 
+fn update_instance_config(
+    instance_id: &str,
+    name: Option<&str>,
+    version: Option<&str>,
+    port: Option<u16>,
+) -> Result<()> {
+    let id = instance_id.to_string();
+    let name_owned = name.map(ToOwned::to_owned);
+    let version_owned = version.map(ToOwned::to_owned);
+
+    with_config_mut(move |config| {
+        let instance = config
+            .instances
+            .get_mut(&id)
+            .ok_or_else(|| AppError::instance_not_found(&id))?;
+
+        if let Some(ref n) = name_owned {
+            instance.name = n.clone();
+        }
+        if let Some(ref v) = version_owned {
+            instance.version = v.clone();
+        }
+        if let Some(p) = port {
+            instance.port = p;
+        }
+        Ok(())
+    })
+}
+
 pub(super) fn is_dashboard_enabled(instance_id: &str) -> bool {
     if validate_instance_id(instance_id).is_err() {
         return false;
@@ -203,24 +232,7 @@ pub async fn update_instance(
 
         // Update config(version + optional name/port) after the operation completes successfully.
         // This prevents "config says new version" while the deployment hasn't fully finished.
-        let name_owned = name.map(|n| n.to_string());
-        let new_version_clone = new_version.clone();
-        let port_copy = port;
-        let id = instance_id.to_string();
-        with_config_mut(move |config| {
-            let instance = config
-                .instances
-                .get_mut(&id)
-                .ok_or_else(|| AppError::instance_not_found(&id))?;
-            if let Some(n) = name_owned {
-                instance.name = n;
-            }
-            instance.version = new_version_clone;
-            if let Some(p) = port_copy {
-                instance.port = p;
-            }
-            Ok(())
-        })?;
+        update_instance_config(instance_id, name, Some(new_version.as_str()), port)?;
 
         // Delete auto-backup
         if let Some(ref bp) = backup_path {
@@ -233,26 +245,7 @@ pub async fn update_instance(
         Ok(())
     } else {
         // No version change
-        let name_owned = name.map(|n| n.to_string());
-        let version_owned = version.map(|v| v.to_string());
-        let port_copy = port;
-        let id = instance_id.to_string();
-        with_config_mut(move |config| {
-            let instance = config
-                .instances
-                .get_mut(&id)
-                .ok_or_else(|| AppError::instance_not_found(&id))?;
-            if let Some(n) = name_owned {
-                instance.name = n;
-            }
-            if let Some(v) = version_owned {
-                instance.version = v;
-            }
-            if let Some(p) = port_copy {
-                instance.port = p;
-            }
-            Ok(())
-        })
+        update_instance_config(instance_id, name, version, port)
     }
 }
 
