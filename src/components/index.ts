@@ -3,6 +3,7 @@ export { InstanceStatusTag } from './InstanceStatusTag';
 export { InstanceActions } from './InstanceActions';
 export { DeployProgressModal } from './DeployProgressModal';
 export { ConfirmModal } from './ConfirmModal';
+export { EditInstanceModal } from './EditInstanceModal';
 export { ErrorBoundary } from './ErrorBoundary';
 export { TitleBar } from './TitleBar';
 export { PageHeader } from './PageHeader';

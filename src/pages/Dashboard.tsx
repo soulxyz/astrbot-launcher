@@ -19,6 +19,7 @@ import { useAppStore } from '../stores';
 import {
   DeployProgressModal,
   ConfirmModal,
+  EditInstanceModal,
   PageHeader,
 } from '../components';
 import { handleApiError } from '../utils';
@@ -59,26 +60,12 @@ export default function Dashboard() {
   // Modal states (local — UI only)
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
-  const [editFormVersion, setEditFormVersion] = useState('');
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [editingInstance, setEditingInstance] = useState<InstanceStatus | null>(null);
   const [instanceToDelete, setInstanceToDelete] = useState<InstanceStatus | null>(null);
 
   // Forms
   const [createForm] = Form.useForm();
-  const [editForm] = Form.useForm();
-
-  // Edit modal version comparison (async)
-  const [editVersionCmp, setEditVersionCmp] = useState(0);
-
-  useEffect(() => {
-    if (editingInstance && editFormVersion && editFormVersion !== editingInstance.version) {
-      api.compareVersions(editFormVersion, editingInstance.version).then(setEditVersionCmp);
-    } else {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setEditVersionCmp(0);
-    }
-  }, [editFormVersion, editingInstance]);
 
   // Version update hints
   const [latestVersion, setLatestVersion] = useState<string | null>(null);
@@ -173,7 +160,7 @@ export default function Dashboard() {
           );
           if (latestInstance === SKIP_OPERATION) {
             setEditOpen(false);
-            setEditFormVersion('');
+            setEditingInstance(null);
             return SKIP_OPERATION;
           }
 
@@ -190,7 +177,7 @@ export default function Dashboard() {
           }
 
           setEditOpen(false);
-          setEditFormVersion('');
+          setEditingInstance(null);
           await api.updateInstance(latestInstance.id, values.name, values.version, values.port ?? 0);
         },
         onSuccess: () => {
@@ -348,15 +335,9 @@ export default function Dashboard() {
   const openEditModal = useCallback(
     (instance: InstanceStatus) => {
       setEditingInstance(instance);
-      setEditFormVersion(instance.version);
-      editForm.setFieldsValue({
-        name: instance.name,
-        version: instance.version,
-        port: instance.configured_port || 0,
-      });
       setEditOpen(true);
     },
-    [editForm]
+    []
   );
 
   const openDeleteModal = useCallback((instance: InstanceStatus) => {
@@ -476,51 +457,16 @@ export default function Dashboard() {
         </Form>
       </Modal>
 
-      {/* Edit Modal */}
-      <Modal
-        title="编辑实例"
+      <EditInstanceModal
         open={editOpen}
+        instance={editingInstance}
+        versions={versions}
+        onSubmit={handleEdit}
         onCancel={() => {
           setEditOpen(false);
-          setEditFormVersion('');
+          setEditingInstance(null);
         }}
-        onOk={() => editForm.submit()}
-        closable={false}
-        okText={
-          editingInstance && editFormVersion !== editingInstance.version
-            ? editVersionCmp > 0
-              ? '升级'
-              : '降级'
-            : '确定'
-        }
-        destroyOnHidden
-      >
-        <Form
-          form={editForm}
-          layout="vertical"
-          onFinish={handleEdit}
-          onValuesChange={(changed) => {
-            if (changed.version !== undefined) {
-              setEditFormVersion(changed.version);
-            }
-          }}
-        >
-          <Form.Item name="name" label="名称" rules={[{ required: true }]}>
-            <Input />
-          </Form.Item>
-          <Form.Item name="version" label="版本" rules={[{ required: true }]}>
-            <Select options={versionOptions} />
-          </Form.Item>
-          <Form.Item name="port" label="端口">
-            <InputNumber
-              min={0}
-              max={65535}
-              placeholder="留空或填0使用随机端口"
-              style={{ width: '100%' }}
-            />
-          </Form.Item>
-        </Form>
-      </Modal>
+      />
 
       {/* Delete Modal */}
       <ConfirmModal
