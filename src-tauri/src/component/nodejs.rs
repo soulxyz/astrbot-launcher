@@ -4,9 +4,10 @@ use reqwest::Client;
 use serde::Deserialize;
 use tauri::AppHandle;
 
-use crate::archive::{extract_tar_gz_flat, extract_zip_flat};
+use super::common::install_from_archive_with_progress;
+use crate::archive::ArchiveFormat;
 use crate::config::load_config;
-use crate::download::{download_file, emit_download_progress, fetch_json, DownloadOptions};
+use crate::download::fetch_json;
 use crate::error::{AppError, Result};
 use crate::paths::{
     get_component_dir, get_node_exe_path, get_nodejs_npm_cache, get_nodejs_npm_prefix,
@@ -132,16 +133,6 @@ pub async fn reinstall_nodejs(client: &Client, app_handle: Option<&AppHandle>) -
 async fn do_install_nodejs(client: &Client, app_handle: Option<&AppHandle>) -> Result<String> {
     let target_dir = get_component_dir("nodejs");
 
-    // Clean existing directory if present
-    if target_dir.exists() {
-        std::fs::remove_dir_all(&target_dir).map_err(|e| {
-            AppError::io(format!(
-                "Failed to clean existing nodejs dir {:?}: {}",
-                target_dir, e
-            ))
-        })?;
-    }
-
     // Determine mirror URL
     let mirror = match load_config() {
         Ok(config) if !config.nodejs_mirror.is_empty() => {
@@ -171,35 +162,27 @@ async fn do_install_nodejs(client: &Client, app_handle: Option<&AppHandle>) -> R
     let filename = format!("node-{}-{}-{}.{}", version, os, arch, ext);
     let download_url = format!("{}/{}/{}", mirror, version, filename);
 
-    // Prepare target directory
-    std::fs::create_dir_all(&target_dir)
-        .map_err(|e| AppError::io(format!("Failed to create nodejs dir: {}", e)))?;
-
     let archive_path = if is_windows {
         target_dir.join("node.zip")
     } else {
         target_dir.join("node.tar.gz")
     };
-
-    let opts = app_handle.map(|ah| DownloadOptions {
-        app_handle: ah,
-        // Must match frontend component id (ComponentId::Nodejs.dir_name() == "nodejs").
-        id: "nodejs",
-    });
-
-    // Download
-    download_file(client, &download_url, &archive_path, opts.as_ref()).await?;
-
-    if let Some(o) = &opts {
-        emit_download_progress(o, 0, None, Some(99), "extracting", "正在解压");
-    }
-
-    // Extract
-    if is_windows {
-        extract_zip_flat(&archive_path, &target_dir)?;
+    let archive_format = if is_windows {
+        ArchiveFormat::Zip
     } else {
-        extract_tar_gz_flat(&archive_path, &target_dir)?;
-    }
+        ArchiveFormat::TarGz
+    };
+    install_from_archive_with_progress(
+        client,
+        &download_url,
+        &target_dir,
+        &archive_path,
+        archive_format,
+        // Must match frontend component id (ComponentId::Nodejs.dir_name() == "nodejs").
+        "nodejs",
+        app_handle,
+    )
+    .await?;
 
     // Verify node and npm executables
     let node_exe = get_node_exe_path(&target_dir);
@@ -222,15 +205,6 @@ async fn do_install_nodejs(client: &Client, app_handle: Option<&AppHandle>) -> R
             "Node.js {} extracted but npx executable not found: {:?}",
             version, npx_exe
         )));
-    }
-
-    // Cleanup archive
-    if let Err(e) = std::fs::remove_file(&archive_path) {
-        log::warn!("Failed to remove archive {:?}: {}", archive_path, e);
-    }
-
-    if let Some(o) = &opts {
-        emit_download_progress(o, 0, None, Some(100), "done", "安装完成");
     }
 
     Ok(version.clone())

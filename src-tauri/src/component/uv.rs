@@ -4,11 +4,9 @@ use reqwest::Client;
 use tauri::AppHandle;
 use tokio::process::Command;
 
-use super::common::normalize_default_index;
-
-use crate::archive::{extract_tar_gz_flat, extract_zip_flat};
+use super::common::{install_from_archive_with_progress, normalize_default_index};
+use crate::archive::ArchiveFormat;
 use crate::config::load_config;
-use crate::download::{download_file, emit_download_progress, DownloadOptions};
 use crate::error::{AppError, Result};
 use crate::github::wrap_with_proxy;
 use crate::paths::{get_component_dir, get_uv_cache_dir, get_uv_exe_path, get_uvx_exe_path};
@@ -91,18 +89,6 @@ pub async fn reinstall_uv(client: &Client, app_handle: Option<&AppHandle>) -> Re
 async fn do_install_uv(client: &Client, app_handle: Option<&AppHandle>) -> Result<String> {
     let target_dir = get_component_dir("uv");
 
-    if target_dir.exists() {
-        std::fs::remove_dir_all(&target_dir).map_err(|e| {
-            AppError::io(format!(
-                "Failed to clean existing uv dir {:?}: {}",
-                target_dir, e
-            ))
-        })?;
-    }
-
-    std::fs::create_dir_all(&target_dir)
-        .map_err(|e| AppError::io(format!("Failed to create uv dir: {}", e)))?;
-
     let archive_name =
         get_uv_archive_name().map_err(|e| AppError::io(format!("Unsupported platform: {}", e)))?;
     let raw_url = format!(
@@ -115,23 +101,21 @@ async fn do_install_uv(client: &Client, app_handle: Option<&AppHandle>) -> Resul
     };
 
     let archive_path = target_dir.join(archive_name);
-
-    let opts = app_handle.map(|ah| DownloadOptions {
-        app_handle: ah,
-        id: "uv",
-    });
-
-    download_file(client, &download_url, &archive_path, opts.as_ref()).await?;
-
-    if let Some(o) = &opts {
-        emit_download_progress(o, 0, None, Some(99), "extracting", "正在解压");
-    }
-
-    if archive_name.ends_with(".zip") {
-        extract_zip_flat(&archive_path, &target_dir)?;
+    let archive_format = if archive_name.ends_with(".zip") {
+        ArchiveFormat::Zip
     } else {
-        extract_tar_gz_flat(&archive_path, &target_dir)?;
-    }
+        ArchiveFormat::TarGz
+    };
+    install_from_archive_with_progress(
+        client,
+        &download_url,
+        &target_dir,
+        &archive_path,
+        archive_format,
+        "uv",
+        app_handle,
+    )
+    .await?;
 
     let uv_exe = get_uv_exe_path(&target_dir);
     if !uv_exe.exists() {
@@ -147,14 +131,6 @@ async fn do_install_uv(client: &Client, app_handle: Option<&AppHandle>) -> Resul
             "uv {} extracted but uvx executable not found: {:?}",
             UV_VERSION, uvx_exe
         )));
-    }
-
-    if let Err(e) = std::fs::remove_file(&archive_path) {
-        log::warn!("Failed to remove archive {:?}: {}", archive_path, e);
-    }
-
-    if let Some(o) = &opts {
-        emit_download_progress(o, 0, None, Some(100), "done", "安装完成");
     }
 
     Ok(UV_VERSION.to_string())

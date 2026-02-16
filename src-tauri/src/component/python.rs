@@ -4,11 +4,9 @@ use reqwest::Client;
 use tauri::AppHandle;
 use tokio::process::Command;
 
-use super::common::normalize_default_index;
-
-use crate::archive::extract_tar_gz_flat;
+use super::common::{install_from_archive_with_progress, normalize_default_index};
+use crate::archive::ArchiveFormat;
 use crate::config::load_config;
-use crate::download::{download_file, emit_download_progress, DownloadOptions};
 use crate::error::{AppError, Result};
 use crate::github::{fetch_python_releases, wrap_with_proxy};
 use crate::paths::{get_python_exe_path, get_python_runtime_dir};
@@ -164,18 +162,9 @@ async fn install_missing_runtimes(
 async fn install_python_version(
     client: &Client,
     major_version: &str,
-    target_dir: &PathBuf,
+    target_dir: &std::path::Path,
     app_handle: Option<&AppHandle>,
 ) -> Result<String> {
-    if target_dir.exists() {
-        std::fs::remove_dir_all(target_dir).map_err(|e| {
-            AppError::io(format!(
-                "Failed to clean python dir {:?}: {}",
-                target_dir, e
-            ))
-        })?;
-    }
-
     let releases = fetch_python_releases(client).await?;
 
     let mut download_url = None;
@@ -195,21 +184,16 @@ async fn install_python_version(
     }
 
     let archive_path = target_dir.join("python.tar.gz");
-    std::fs::create_dir_all(target_dir)
-        .map_err(|e| AppError::io(format!("Failed to create python dir: {}", e)))?;
-
-    let opts = app_handle.map(|ah| DownloadOptions {
-        app_handle: ah,
-        id: "python",
-    });
-
-    download_file(client, &url, &archive_path, opts.as_ref()).await?;
-
-    if let Some(o) = &opts {
-        emit_download_progress(o, 0, None, Some(99), "extracting", "正在解压");
-    }
-
-    extract_tar_gz_flat(&archive_path, target_dir)?;
+    install_from_archive_with_progress(
+        client,
+        &url,
+        target_dir,
+        &archive_path,
+        ArchiveFormat::TarGz,
+        "python",
+        app_handle,
+    )
+    .await?;
 
     let python_exe = get_python_exe_path(target_dir);
     if !python_exe.exists() {
@@ -217,14 +201,6 @@ async fn install_python_version(
             "Python {} extracted but executable not found: {:?}",
             major_version, python_exe
         )));
-    }
-
-    if let Err(e) = std::fs::remove_file(&archive_path) {
-        log::warn!("Failed to remove archive {:?}: {}", archive_path, e);
-    }
-
-    if let Some(o) = &opts {
-        emit_download_progress(o, 0, None, Some(100), "done", "安装完成");
     }
 
     Ok(python_version)
