@@ -7,6 +7,8 @@ interface ProxySettingsCardProps {
   proxyUsername: string;
   proxyPassword: string;
   proxySaving: boolean;
+  proxyCanSave: boolean;
+  proxyError: string | null;
   onProxyUrlChange: (value: string) => void;
   onProxyPortChange: (value: string) => void;
   onProxyUsernameChange: (value: string) => void;
@@ -20,6 +22,8 @@ export function ProxySettingsCard({
   proxyUsername,
   proxyPassword,
   proxySaving,
+  proxyCanSave,
+  proxyError,
   onProxyUrlChange,
   onProxyPortChange,
   onProxyUsernameChange,
@@ -29,7 +33,11 @@ export function ProxySettingsCard({
   return (
     <Card title="代理" size="small" style={{ marginBottom: 16 }}>
       <Form layout="vertical">
-        <Form.Item extra="支持 HTTP / HTTPS / SOCKS5，留空保存表示不使用代理">
+        <Form.Item
+          extra="支持 HTTP / HTTPS / SOCKS5，留空保存表示不使用代理"
+          validateStatus={proxyError ? 'error' : undefined}
+          help={proxyError ?? undefined}
+        >
           <Space direction="vertical" style={{ width: '100%' }} size={8}>
             <Space.Compact style={{ width: '100%' }}>
               <Input
@@ -51,6 +59,7 @@ export function ProxySettingsCard({
               <Button
                 icon={<SaveOutlined />}
                 loading={proxySaving}
+                disabled={!proxyCanSave}
                 onClick={() => void onSaveProxy()}
               >
                 保存

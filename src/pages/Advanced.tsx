@@ -14,6 +14,14 @@ import {
 } from '../components';
 import { handleApiError } from '../utils';
 import { OPERATION_KEYS } from '../constants';
+import {
+  normalizeInputValue,
+  validateGithubProxy,
+  validateNodejsMirror,
+  validateNpmRegistry,
+  validateProxySettings,
+  validatePypiMirror,
+} from './advancedSettings.validation';
 
 type ConfirmModalType = 'clearData' | 'clearVenv' | 'clearPycache' | null;
 type SaveSettingOptions = {
@@ -22,6 +30,7 @@ type SaveSettingOptions = {
   successMessage: string;
   reloadBefore?: boolean;
 };
+type SourceSettingType = 'githubProxy' | 'pypiMirror' | 'nodejsMirror' | 'npmRegistry';
 type ClearInstanceOptions = {
   selectedId: string | null;
   operationKey: (id: string) => string;
@@ -32,7 +41,9 @@ type ClearInstanceOptions = {
 };
 type SourceSettingConfig = {
   key: string;
-  value: string;
+  normalizedValue: string;
+  validationError: string | null;
+  isDirty: boolean;
   save: (value: string) => Promise<void>;
   successMessage: string;
   reloadBefore?: boolean;
@@ -97,6 +108,42 @@ export default function Advanced() {
     }
   }, [config, initialized]);
 
+  const proxyValidation = validateProxySettings(
+    proxyUrl,
+    proxyPort,
+    proxyUsername,
+    proxyPassword
+  );
+  const proxyNormalized = proxyValidation.normalized;
+  const proxyError = proxyValidation.error;
+  const proxyDirty =
+    proxyNormalized.url !== normalizeInputValue(config?.proxy_url ?? '') ||
+    proxyNormalized.port !== normalizeInputValue(config?.proxy_port ?? '') ||
+    proxyNormalized.username !== normalizeInputValue(config?.proxy_username ?? '') ||
+    proxyNormalized.password !== normalizeInputValue(config?.proxy_password ?? '');
+  const proxyCanSave = proxyDirty && !proxyError && !proxySaving;
+
+  const githubProxyNormalized = normalizeInputValue(githubProxy);
+  const pypiMirrorNormalized = normalizeInputValue(pypiMirror);
+  const nodejsMirrorNormalized = normalizeInputValue(nodejsMirror);
+  const npmRegistryNormalized = normalizeInputValue(npmRegistry);
+
+  const githubProxyError = validateGithubProxy(githubProxyNormalized);
+  const pypiMirrorError = validatePypiMirror(pypiMirrorNormalized);
+  const nodejsMirrorError = validateNodejsMirror(nodejsMirrorNormalized);
+  const npmRegistryError = validateNpmRegistry(npmRegistryNormalized);
+
+  const githubProxyDirty = githubProxyNormalized !== normalizeInputValue(config?.github_proxy ?? '');
+  const pypiMirrorDirty = pypiMirrorNormalized !== normalizeInputValue(config?.pypi_mirror ?? '');
+  const nodejsMirrorDirty =
+    nodejsMirrorNormalized !== normalizeInputValue(config?.nodejs_mirror ?? '');
+  const npmRegistryDirty = npmRegistryNormalized !== normalizeInputValue(config?.npm_registry ?? '');
+
+  const githubProxyCanSave = githubProxyDirty && !githubProxyError && !githubSaving;
+  const pypiMirrorCanSave = pypiMirrorDirty && !pypiMirrorError && !pypiSaving;
+  const nodejsMirrorCanSave = nodejsMirrorDirty && !nodejsMirrorError && !nodejsMirrorSaving;
+  const npmRegistryCanSave = npmRegistryDirty && !npmRegistryError && !npmRegistrySaving;
+
   const handleCloseToTrayChange = async (value: string) => {
     await handleSaveSetting({
       key: OPERATION_KEYS.advancedSaveCloseToTray,
@@ -155,59 +202,74 @@ export default function Advanced() {
     });
   };
 
-  const sourceSettingConfigs: Record<
-    'githubProxy' | 'pypiMirror' | 'nodejsMirror' | 'npmRegistry',
-    SourceSettingConfig
-  > = {
+  const sourceSettingConfigs: Record<SourceSettingType, SourceSettingConfig> = {
     githubProxy: {
       key: OPERATION_KEYS.advancedSaveGithubProxy,
-      value: githubProxy,
+      normalizedValue: githubProxyNormalized,
+      validationError: githubProxyError,
+      isDirty: githubProxyDirty,
       save: api.saveGithubProxy,
       successMessage: 'GitHub 代理已保存',
       reloadBefore: true,
     },
     pypiMirror: {
       key: OPERATION_KEYS.advancedSavePypiMirror,
-      value: pypiMirror,
+      normalizedValue: pypiMirrorNormalized,
+      validationError: pypiMirrorError,
+      isDirty: pypiMirrorDirty,
       save: api.savePypiMirror,
       successMessage: 'PyPI 镜像源已保存',
       reloadBefore: true,
     },
     nodejsMirror: {
       key: OPERATION_KEYS.advancedSaveNodejsMirror,
-      value: nodejsMirror,
+      normalizedValue: nodejsMirrorNormalized,
+      validationError: nodejsMirrorError,
+      isDirty: nodejsMirrorDirty,
       save: api.saveNodejsMirror,
       successMessage: 'Node.js 镜像源已保存',
     },
     npmRegistry: {
       key: OPERATION_KEYS.advancedSaveNpmRegistry,
-      value: npmRegistry,
+      normalizedValue: npmRegistryNormalized,
+      validationError: npmRegistryError,
+      isDirty: npmRegistryDirty,
       save: api.saveNpmRegistry,
       successMessage: 'npm 注册源已保存',
     },
   };
 
-  const handleSaveSourceSetting = async (
-    type: 'githubProxy' | 'pypiMirror' | 'nodejsMirror' | 'npmRegistry'
-  ) => {
-    const config = sourceSettingConfigs[type];
+  const handleSaveSourceSetting = async (type: SourceSettingType) => {
+    const setting = sourceSettingConfigs[type];
+    if (!setting.isDirty) return;
+    if (setting.validationError) {
+      message.warning(setting.validationError);
+      return;
+    }
+
     await handleSaveSetting({
-      key: config.key,
-      save: () => config.save(config.value),
-      successMessage: config.successMessage,
-      reloadBefore: config.reloadBefore,
+      key: setting.key,
+      save: () => setting.save(setting.normalizedValue),
+      successMessage: setting.successMessage,
+      reloadBefore: setting.reloadBefore,
     });
   };
 
   const handleSaveProxy = async () => {
+    if (!proxyDirty) return;
+    if (proxyError) {
+      message.warning(proxyError);
+      return;
+    }
+
     await handleSaveSetting({
       key: OPERATION_KEYS.advancedSaveProxy,
       save: () =>
         api.saveProxy({
-          proxyUrl,
-          proxyPort,
-          proxyUsername,
-          proxyPassword,
+          proxyUrl: proxyNormalized.url,
+          proxyPort: proxyNormalized.port,
+          proxyUsername: proxyNormalized.username,
+          proxyPassword: proxyNormalized.password,
         }),
       successMessage: '代理已保存',
       reloadBefore: true,
@@ -391,6 +453,8 @@ export default function Advanced() {
         proxyUsername={proxyUsername}
         proxyPassword={proxyPassword}
         proxySaving={proxySaving}
+        proxyCanSave={proxyCanSave}
+        proxyError={proxyError}
         onProxyUrlChange={setProxyUrl}
         onProxyPortChange={setProxyPort}
         onProxyUsernameChange={setProxyUsername}
@@ -407,6 +471,14 @@ export default function Advanced() {
         pypiSaving={pypiSaving}
         nodejsMirrorSaving={nodejsMirrorSaving}
         npmRegistrySaving={npmRegistrySaving}
+        githubProxyCanSave={githubProxyCanSave}
+        pypiMirrorCanSave={pypiMirrorCanSave}
+        nodejsMirrorCanSave={nodejsMirrorCanSave}
+        npmRegistryCanSave={npmRegistryCanSave}
+        githubProxyError={githubProxyError}
+        pypiMirrorError={pypiMirrorError}
+        nodejsMirrorError={nodejsMirrorError}
+        npmRegistryError={npmRegistryError}
         onGithubProxyChange={setGithubProxy}
         onPypiMirrorChange={setPypiMirror}
         onNodejsMirrorChange={setNodejsMirror}
