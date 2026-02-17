@@ -78,6 +78,14 @@ pub struct AppConfig {
     #[serde(default)]
     pub github_proxy: String,
     #[serde(default)]
+    pub proxy_url: String,
+    #[serde(default)]
+    pub proxy_port: String,
+    #[serde(default)]
+    pub proxy_username: String,
+    #[serde(default)]
+    pub proxy_password: String,
+    #[serde(default)]
     pub pypi_mirror: String,
     #[serde(default)]
     pub nodejs_mirror: String,
@@ -105,6 +113,10 @@ impl Default for AppConfig {
             instances: HashMap::new(),
             installed_versions: Vec::new(),
             github_proxy: String::new(),
+            proxy_url: String::new(),
+            proxy_port: String::new(),
+            proxy_username: String::new(),
+            proxy_password: String::new(),
             pypi_mirror: String::new(),
             nodejs_mirror: String::new(),
             npm_registry: String::new(),

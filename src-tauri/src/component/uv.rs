@@ -11,6 +11,7 @@ use crate::error::{AppError, Result};
 use crate::github::wrap_with_proxy;
 use crate::paths::{get_component_dir, get_uv_cache_dir, get_uv_exe_path, get_uvx_exe_path};
 use crate::platform::get_uv_archive_name;
+use crate::proxy;
 
 const UV_VERSION: &str = "0.10.2";
 
@@ -45,6 +46,16 @@ pub async fn uv_sync(
 
     let default_index = normalize_default_index(pypi_mirror);
     let new_path = crate::component::build_instance_path(venv_python)?;
+    let proxy_env_vars = match load_config().and_then(|cfg| proxy::build_proxy_env_vars(&cfg)) {
+        Ok(vars) => vars,
+        Err(e) => {
+            log::warn!(
+                "Failed to prepare proxy env for uv sync, fallback to no proxy: {}",
+                e
+            );
+            Vec::new()
+        }
+    };
 
     let mut cmd = Command::new(&uv_exe);
     cmd.arg("sync")
@@ -62,6 +73,7 @@ pub async fn uv_sync(
         .env("PATH", new_path)
         .env("VIRTUAL_ENV", venv_dir)
         .env_remove("PYTHONHOME");
+    proxy::apply_proxy_env(&mut cmd, &proxy_env_vars);
 
     #[cfg(target_os = "windows")]
     {

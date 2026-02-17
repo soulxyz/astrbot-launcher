@@ -8,5 +8,6 @@ export { ErrorBoundary } from './ErrorBoundary';
 export { TitleBar } from './TitleBar';
 export { PageHeader } from './PageHeader';
 export { GeneralSettingsCard } from './advanced/GeneralSettingsCard';
+export { ProxySettingsCard } from './advanced/ProxySettingsCard';
 export { SourceSettingsCard } from './advanced/SourceSettingsCard';
 export { TroubleshootingCard } from './advanced/TroubleshootingCard';

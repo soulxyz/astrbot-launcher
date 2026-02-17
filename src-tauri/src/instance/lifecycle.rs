@@ -22,6 +22,7 @@ use crate::process::{
     can_signal_expected_process, check_port_available, find_available_port, force_kill,
     graceful_shutdown, resolve_process_executable_path, ProcessManager,
 };
+use crate::proxy;
 use crate::validation::validate_instance_id;
 
 const STARTUP_LOG_TIMEOUT_SECS: u64 = 300;
@@ -80,6 +81,16 @@ pub async fn start_instance(
         .get(instance_id)
         .ok_or_else(|| AppError::instance_not_found(instance_id))?;
     let default_index = component::normalize_default_index(&config.pypi_mirror);
+    let proxy_env_vars = match proxy::build_proxy_env_vars(&config) {
+        Ok(vars) => vars,
+        Err(e) => {
+            log::warn!(
+                "Failed to prepare proxy env for instance startup, fallback to no proxy: {}",
+                e
+            );
+            Vec::new()
+        }
+    };
     let port = if instance_config.port > 0 {
         check_port_available(instance_config.port)?;
         instance_config.port
@@ -129,6 +140,7 @@ pub async fn start_instance(
     for (key, val) in &nodejs_env_vars {
         cmd.env(key, val);
     }
+    proxy::apply_proxy_env(&mut cmd, &proxy_env_vars);
 
     #[cfg(target_os = "windows")]
     {

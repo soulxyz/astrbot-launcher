@@ -15,6 +15,10 @@ export interface AppConfig {
   instances: Record<string, InstanceConfig>;
   installed_versions: InstalledVersion[];
   github_proxy: string;
+  proxy_url: string;
+  proxy_port: string;
+  proxy_username: string;
+  proxy_password: string;
   pypi_mirror: string;
   nodejs_mirror: string;
   npm_registry: string;

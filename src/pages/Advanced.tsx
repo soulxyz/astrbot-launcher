@@ -7,6 +7,7 @@ import { SKIP_OPERATION, findLatestOrSkip, useOperationRunner } from '../hooks';
 import {
   ConfirmModal,
   GeneralSettingsCard,
+  ProxySettingsCard,
   SourceSettingsCard,
   TroubleshootingCard,
   PageHeader,
@@ -49,10 +50,15 @@ export default function Advanced() {
   const { runOperation } = useOperationRunner();
 
   // Source settings
+  const [proxyUrl, setProxyUrl] = useState('');
+  const [proxyPort, setProxyPort] = useState('');
+  const [proxyUsername, setProxyUsername] = useState('');
+  const [proxyPassword, setProxyPassword] = useState('');
   const [githubProxy, setGithubProxy] = useState('');
   const [pypiMirror, setPypiMirror] = useState('');
   const [nodejsMirror, setNodejsMirror] = useState('');
   const [npmRegistry, setNpmRegistry] = useState('');
+  const proxySaving = operations[OPERATION_KEYS.advancedSaveProxy] || false;
   const githubSaving = operations[OPERATION_KEYS.advancedSaveGithubProxy] || false;
   const pypiSaving = operations[OPERATION_KEYS.advancedSavePypiMirror] || false;
   const nodejsMirrorSaving = operations[OPERATION_KEYS.advancedSaveNodejsMirror] || false;
@@ -79,6 +85,10 @@ export default function Advanced() {
   useEffect(() => {
     if (config && !initialized) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
+      setProxyUrl(config.proxy_url);
+      setProxyPort(config.proxy_port);
+      setProxyUsername(config.proxy_username);
+      setProxyPassword(config.proxy_password);
       setGithubProxy(config.github_proxy);
       setPypiMirror(config.pypi_mirror);
       setNodejsMirror(config.nodejs_mirror);
@@ -186,6 +196,21 @@ export default function Advanced() {
       save: () => config.save(config.value),
       successMessage: config.successMessage,
       reloadBefore: config.reloadBefore,
+    });
+  };
+
+  const handleSaveProxy = async () => {
+    await handleSaveSetting({
+      key: OPERATION_KEYS.advancedSaveProxy,
+      save: () =>
+        api.saveProxy({
+          proxyUrl,
+          proxyPort,
+          proxyUsername,
+          proxyPassword,
+        }),
+      successMessage: '代理已保存',
+      reloadBefore: true,
     });
   };
 
@@ -358,6 +383,19 @@ export default function Advanced() {
         onPersistInstanceStateChange={handlePersistInstanceStateChange}
         onAutostartChange={handleAutostartChange}
         onUseUvForDepsChange={handleUseUvForDepsChange}
+      />
+
+      <ProxySettingsCard
+        proxyUrl={proxyUrl}
+        proxyPort={proxyPort}
+        proxyUsername={proxyUsername}
+        proxyPassword={proxyPassword}
+        proxySaving={proxySaving}
+        onProxyUrlChange={setProxyUrl}
+        onProxyPortChange={setProxyPort}
+        onProxyUsernameChange={setProxyUsername}
+        onProxyPasswordChange={setProxyPassword}
+        onSaveProxy={handleSaveProxy}
       />
 
       <SourceSettingsCard
