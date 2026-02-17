@@ -18,6 +18,12 @@ AstrBot Launcher是一款用于图形化管理AstrBot的桌面应用程序，提
 | Linux | 尽力而为 | 提供可用支持，但不同桌面环境存在兼容性差异 |
 | macOS | 理论上可工作 | 代码设计上兼容，但当前缺少充分实机验证 |
 
+## 关于 Windows ARM 设备的兼容性说明
+
+AstrBot v4.14.6及更早版本依赖Python 3.10运行时。由于Windows ARM平台缺少可用的Python 3.10预编译版本，启动器将在该环境下自动切换为Python 3.11运行。
+
+在绝大多数使用场景下，此兼容方案不会影响正常功能。如个别插件或依赖出现兼容性问题，建议升级至AstrBot v4.14.7及以上版本，以获得完整支持与最佳稳定性。
+
 ## 技术栈
 
 - 前端: React 19, Vite, Ant Design, TypeScript
