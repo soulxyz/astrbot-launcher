@@ -369,8 +369,10 @@ pub async fn create_backup(instance_id: String, state: State<'_, AppState>) -> R
 }
 
 #[tauri::command]
-pub async fn restore_backup(backup_path: String) -> Result<()> {
-    backup::restore_backup(&backup_path)
+pub async fn restore_backup(backup_path: String, state: State<'_, AppState>) -> Result<()> {
+    let (resolved_path, metadata) = backup::resolve_restore_backup_input(&backup_path)?;
+    ensure_instance_stopped(&state, &metadata.instance_id).await?;
+    backup::restore_backup_with_input(resolved_path, metadata)
 }
 
 #[tauri::command]

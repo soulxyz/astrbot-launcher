@@ -238,14 +238,16 @@ fn read_backup_metadata_zip(backup_path: &Path) -> Result<BackupMetadata> {
         .map_err(|e| AppError::backup(format!("Failed to parse metadata: {}", e)))
 }
 
-/// Restore a backup to its original instance
-pub fn restore_backup(backup_path: &str) -> Result<()> {
+pub fn resolve_restore_backup_input(backup_path: &str) -> Result<(PathBuf, BackupMetadata)> {
     log::info!("Restoring backup from {:?}", backup_path);
     let backup_path = resolve_backup_path(backup_path, true)?;
 
     // Read metadata
     let metadata = read_backup_metadata(&backup_path)?;
+    Ok((backup_path, metadata))
+}
 
+pub fn restore_backup_with_input(backup_path: PathBuf, metadata: BackupMetadata) -> Result<()> {
     // Check if version is installed
     let config = load_config()?;
     if !config
@@ -280,23 +282,24 @@ pub fn restore_backup(backup_path: &str) -> Result<()> {
 }
 
 /// Route an archive entry to the correct destination directory.
-fn route_backup_entry(relative: &Path, instance_dir: &Path, core_dir: &Path) -> Option<PathBuf> {
+fn route_backup_entry(relative: &Path, core_dir: &Path) -> Option<PathBuf> {
     // Skip backup.toml
     if relative == Path::new("backup.toml") {
         return None;
     }
 
-    // Skip venv entries from old backups
+    if relative.starts_with("data") {
+        return Some(core_dir.join(relative));
+    }
     if relative.starts_with("venv") {
         return None;
     }
 
-    // Route data/ entries to core_dir, everything else to instance_dir
-    if relative.starts_with("data") {
-        Some(core_dir.join(relative))
-    } else {
-        Some(instance_dir.join(relative))
-    }
+    log::warn!(
+        "Ignoring unsupported backup entry during restore: {}",
+        relative.display()
+    );
+    None
 }
 
 /// Extract backup archive to instance directories.
@@ -307,7 +310,7 @@ fn extract_backup_to_instance(
 ) -> Result<()> {
     let routing = |raw_path: &str| -> Option<PathBuf> {
         let relative = parse_entry_rel_path(raw_path)?;
-        route_backup_entry(&relative, instance_dir, core_dir)
+        route_backup_entry(&relative, core_dir)
     };
 
     if is_tar_gz(backup_path) {
