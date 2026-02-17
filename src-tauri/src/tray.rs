@@ -2,7 +2,8 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::Manager as _;
 
-pub fn build_tray(app: &mut tauri::App) -> std::result::Result<(), Box<dyn std::error::Error>> {
+#[allow(clippy::expect_used)]
+pub fn build_tray(app: &tauri::App) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let show = MenuItem::with_id(app, "show", "显示窗口", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &quit])?;

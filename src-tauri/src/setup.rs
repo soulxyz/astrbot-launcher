@@ -12,7 +12,7 @@ use crate::log_channel;
 use crate::{tray, updater};
 
 pub fn on_setup(
-    app: &mut tauri::App,
+    app: &tauri::App,
     pm_for_monitor: Arc<ProcessManager>,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "linux")]
@@ -39,7 +39,7 @@ pub fn on_setup(
     Ok(())
 }
 
-fn spawn_event_forwarder(app: &mut tauri::App) {
+fn spawn_event_forwarder(app: &tauri::App) {
     let app_handle = app.handle().clone();
     let state: tauri::State<'_, AppState> = app.state();
     let pm: Arc<ProcessManager> = Arc::clone(&state.process_manager);
@@ -63,7 +63,7 @@ fn spawn_event_forwarder(app: &mut tauri::App) {
     });
 }
 
-fn spawn_log_forwarder(app: &mut tauri::App) {
+fn spawn_log_forwarder(app: &tauri::App) {
     let app_handle = app.handle().clone();
     let mut log_rx = log_channel::get_log_sender().subscribe();
 
@@ -80,7 +80,7 @@ fn spawn_log_forwarder(app: &mut tauri::App) {
     });
 }
 
-fn restore_instances(app: &mut tauri::App) {
+fn restore_instances(app: &tauri::App) {
     if let Ok(cfg) = load_config() {
         if cfg.persist_instance_state && !cfg.tracked_instances_snapshot.is_empty() {
             let ids = cfg.tracked_instances_snapshot.clone();
