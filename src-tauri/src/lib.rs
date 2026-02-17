@@ -11,22 +11,18 @@ mod log_channel;
 mod paths;
 mod platform;
 mod process;
+mod setup;
 mod sync_utils;
+mod tray;
+mod updater;
 mod validation;
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use reqwest::Client;
-use tauri::menu::{Menu, MenuItem};
-use tauri::tray::TrayIconBuilder;
-use tauri::Emitter as _;
 use tauri::Manager as _;
-use tauri_plugin_dialog::{DialogExt as _, MessageDialogButtons};
 use tauri_plugin_log::{fern, Target, TargetKind};
-use tauri_plugin_updater::UpdaterExt as _;
-#[cfg(target_os = "linux")]
-use webkit2gtk::{HardwareAccelerationPolicy, SettingsExt as _, WebViewExt as _};
 
 use commands::AppState;
 use config::{load_config, with_config_mut};
@@ -91,126 +87,7 @@ pub fn run() {
                 .expect("Failed to create HTTP client"),
             process_manager,
         })
-        .setup(move |app| {
-            #[cfg(target_os = "linux")]
-            if let Some(main_webview) = app.get_webview_window("main") {
-                let _ = main_webview.with_webview(|webview| {
-                    if let Some(settings) = webview.inner().settings() {
-                        settings
-                            .set_hardware_acceleration_policy(HardwareAccelerationPolicy::Never);
-                    }
-                });
-            }
-
-            #[cfg(not(target_os = "macos"))]
-            if let Some(main_window) = app.get_webview_window("main") {
-                let _ = main_window.set_decorations(false);
-            }
-
-            pm_for_monitor.start_runtime_monitor();
-            spawn_updater_check(app.handle().clone());
-
-            let app_handle = app.handle().clone();
-            let state: tauri::State<'_, AppState> = app.state();
-            let pm: Arc<ProcessManager> = Arc::clone(&state.process_manager);
-            let mut rx = pm.subscribe_runtime_events();
-
-            tauri::async_runtime::spawn(async move {
-                loop {
-                    match rx.recv().await {
-                        Ok(_event) => {
-                            if let Ok(snapshot) =
-                                commands::build_app_snapshot_with(&pm, load_config).await
-                            {
-                                let _ = app_handle.emit("app-snapshot", &snapshot);
-                            }
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                            log::warn!("Runtime event listener lagged, skipped {} events", skipped);
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                    }
-                }
-            });
-
-            let app_handle_for_logs = app.handle().clone();
-            let mut log_rx = log_channel::get_log_sender().subscribe();
-            tauri::async_runtime::spawn(async move {
-                loop {
-                    match log_rx.recv().await {
-                        Ok(entry) => {
-                            let _ = app_handle_for_logs.emit("log-entry", entry);
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                    }
-                }
-            });
-
-            let show = MenuItem::with_id(app, "show", "显示窗口", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &quit])?;
-
-            TrayIconBuilder::new()
-                .icon(app.default_window_icon().expect("no default icon").clone())
-                .tooltip("AstrBot Launcher")
-                .menu(&menu)
-                .show_menu_on_left_click(false)
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => {
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.set_focus();
-                        }
-                    }
-                    "quit" => {
-                        app.exit(0);
-                    }
-                    _ => {}
-                })
-                .on_tray_icon_event(|tray, event| {
-                    if let tauri::tray::TrayIconEvent::Click { button, .. } = event {
-                        if button == tauri::tray::MouseButton::Left {
-                            if let Some(w) = tray.app_handle().get_webview_window("main") {
-                                let _ = w.show();
-                                let _ = w.set_focus();
-                            }
-                        }
-                    }
-                })
-                .build(app)?;
-
-            // Restore previously tracked instances if persist_instance_state is enabled
-            if let Ok(cfg) = load_config() {
-                if cfg.persist_instance_state && !cfg.tracked_instances_snapshot.is_empty() {
-                    let ids = cfg.tracked_instances_snapshot.clone();
-                    let restore_handle = app.handle().clone();
-                    let restore_state: tauri::State<'_, AppState> = app.state();
-                    let restore_pm = Arc::clone(&restore_state.process_manager);
-                    tauri::async_runtime::spawn(async move {
-                        for id in &ids {
-                            log::info!("Restoring instance: {}", id);
-                            if let Err(e) = instance::start_instance(
-                                id,
-                                &restore_handle,
-                                Arc::clone(&restore_pm),
-                            )
-                            .await
-                            {
-                                log::error!("Failed to restore instance {}: {:?}", id, e);
-                            }
-                        }
-                        // Clear the snapshot after restoration attempt
-                        let _ = with_config_mut(|config| {
-                            config.tracked_instances_snapshot.clear();
-                            Ok(())
-                        });
-                    });
-                }
-            }
-
-            Ok(())
-        })
+        .setup(move |app| setup::on_setup(app, pm_for_monitor))
         .on_window_event(move |window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if load_config().map(|c| c.close_to_tray).unwrap_or(true) {
@@ -276,48 +153,4 @@ pub fn run() {
                 pm_for_exit.stop_all();
             }
         });
-}
-
-fn spawn_updater_check(app: tauri::AppHandle) {
-    tauri::async_runtime::spawn(async move {
-        if let Err(e) = check_and_install_update(app).await {
-            log::warn!("Update check failed: {e}");
-        }
-    });
-}
-
-// TODO: Better user experience around updates, e.g. non-blocking notification, background download, etc.
-async fn check_and_install_update(app: tauri::AppHandle) -> tauri_plugin_updater::Result<()> {
-    let Some(update) = app.updater()?.check().await? else {
-        return Ok(());
-    };
-
-    let version = update.version.to_string();
-    let title = "发现新版本".to_string();
-    let message = format!("检测到新版本（{version}），是否立即安装？");
-
-    let ask_handle = app.clone();
-    let yes = tauri::async_runtime::spawn_blocking(move || {
-        ask_handle
-            .dialog()
-            .message(message)
-            .title(title)
-            .buttons(MessageDialogButtons::OkCancelCustom(
-                "安装".to_string(),
-                "稍后".to_string(),
-            ))
-            .blocking_show()
-    })
-    .await
-    .unwrap_or(false);
-
-    if !yes {
-        return Ok(());
-    }
-
-    update
-        .download_and_install(|_chunk_length, _content_length| {}, || {})
-        .await?;
-
-    app.restart();
 }
