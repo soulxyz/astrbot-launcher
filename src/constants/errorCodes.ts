@@ -24,8 +24,8 @@ const ERROR_TEMPLATES: Record<number, ErrorTemplate> = {
   [ErrorCode.INSTANCE_NOT_FOUND]: '实例未找到',
   [ErrorCode.INSTANCE_RUNNING]: '实例正在运行，请先停止',
   [ErrorCode.INSTANCE_NOT_RUNNING]: '实例未运行',
-  [ErrorCode.VERSION_NOT_FOUND]: '版本 {version} 未安装',
-  [ErrorCode.VERSION_IN_USE]: '版本 {version} 正在被实例 {instance} 使用，无法卸载',
+  [ErrorCode.VERSION_NOT_FOUND]: '版本 {version} 未下载',
+  [ErrorCode.VERSION_IN_USE]: '版本 {version} 正在被实例 {instance} 使用，无法删除',
   [ErrorCode.CONFIG]: '配置错误: {detail}',
   [ErrorCode.IO]: '文件系统错误: {detail}',
   [ErrorCode.NETWORK]: (p) =>

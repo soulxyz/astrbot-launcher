@@ -89,14 +89,14 @@ export default function Versions() {
         task: async () => {
           const { versions: currentVersions } = useAppStore.getState();
           if (!currentVersions.some((v) => v.version === version.version)) {
-            message.info(`版本 ${version.version} 已卸载`);
+            message.info(`版本 ${version.version} 已删除`);
             return SKIP_OPERATION;
           }
 
           await api.uninstallVersion(version.version);
         },
         onSuccess: () => {
-          message.success('已卸载');
+          message.success('已删除');
         },
       });
     },
@@ -190,7 +190,7 @@ export default function Versions() {
                               style={{ marginRight: -8 }}
                             />
                           ),
-                          <Tooltip title="重新安装" key="reinstall">
+                          <Tooltip title="重新下载" key="reinstall">
                             <Button
                               type="text"
                               icon={<ReloadOutlined />}
@@ -220,7 +220,7 @@ export default function Versions() {
                             onClick={() => runComponentInstallAction(comp.id, 'install')}
                             key="install"
                           >
-                            安装
+                            下载
                           </Button>,
                         ].filter(Boolean)
                   }
@@ -230,7 +230,7 @@ export default function Versions() {
                       <Space>
                         {comp.display_name}
                         <Tag color={showAsInstalled ? 'green' : undefined}>
-                          {showAsInstalled ? '已安装' : '未安装'}
+                          {showAsInstalled ? '已下载' : '未下载'}
                         </Tag>
                       </Space>
                     }
@@ -265,7 +265,7 @@ export default function Versions() {
                       />
                     </Tooltip>
                   ),
-                  <Tooltip title="卸载" key="uninstall">
+                  <Tooltip title="删除" key="uninstall">
                     <Button
                       type="text"
                       danger
@@ -413,11 +413,11 @@ export default function Versions() {
       {/* Uninstall Modal */}
       <ConfirmModal
         open={uninstallOpen}
-        title="确认卸载"
+        title="确认删除"
         danger
         content={
           <>
-            <p>确定卸载此版本？</p>
+            <p>确定删除此版本？</p>
             {versionToUninstall && (
               <p style={{ color: '#666' }}>版本: {versionToUninstall.version}</p>
             )}

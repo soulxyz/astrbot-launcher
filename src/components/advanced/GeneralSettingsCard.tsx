@@ -61,7 +61,7 @@ export function GeneralSettingsCard({
           extra={
             uvInstalled
               ? '启用后使用 UV sync 同步依赖；uv 组件丢失时会自动回退到 pip'
-              : '需要先在版本管理页面安装 UV 组件'
+              : '需要先在版本管理页面下载 UV 组件'
           }
         >
           <Switch

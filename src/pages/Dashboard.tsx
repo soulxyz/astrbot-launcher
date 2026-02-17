@@ -246,7 +246,7 @@ export default function Dashboard() {
       const { components } = useAppStore.getState();
       const python = components.find((c) => c.id === 'python');
       if (!python?.installed) {
-        message.warning('请先在版本页面安装 Python 组件');
+        message.warning('请先在版本页面下载 Python 组件');
         return;
       }
 
@@ -410,7 +410,7 @@ export default function Dashboard() {
 
       {initialized && versions.length === 0 && (
         <Alert
-          title="请先在「版本」页面安装 AstrBot 版本后再创建实例"
+          title="请先在「版本」页面下载 AstrBot 版本后再创建实例"
           type="warning"
           showIcon
           style={{ marginBottom: 16 }}
