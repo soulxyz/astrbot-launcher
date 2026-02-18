@@ -63,13 +63,6 @@ pub fn migrate_windows_arm_python_component_if_needed() {
         );
     }
 
-    if let Err(e) = clear_instance_venvs_for_python_migration(&get_data_dir()) {
-        log::warn!(
-            "Migration: failed to clean instance venvs before python component migration: {}",
-            e
-        );
-    }
-
     if let Err(e) = fs::remove_dir_all(&python_component_dir) {
         log::warn!(
             "Migration: failed to remove python component at {:?}: {}",
@@ -83,6 +76,13 @@ pub fn migrate_windows_arm_python_component_if_needed() {
         "Migration: removed python component at {:?}",
         python_component_dir
     );
+
+    if let Err(e) = clear_instance_venvs_for_python_migration(&get_data_dir()) {
+        log::warn!(
+            "Migration: failed to clean instance venvs after python component migration: {}",
+            e
+        );
+    }
 }
 
 #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
