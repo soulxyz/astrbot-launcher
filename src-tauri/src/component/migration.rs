@@ -120,39 +120,54 @@ fn runtime_needs_migration(runtime_dir: &Path) -> bool {
 
 #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
 fn read_pe_machine(exe_path: &Path) -> Result<u16, String> {
-    let bytes = fs::read(exe_path)
-        .map_err(|e| format!("Failed to read executable {:?}: {}", exe_path, e))?;
+    use std::io::{ErrorKind, Read, Seek, SeekFrom};
 
-    if bytes.len() < 0x40 {
-        return Err("File too small for DOS header".to_string());
+    let mut file = fs::File::open(exe_path)
+        .map_err(|e| format!("Failed to open executable {:?}: {}", exe_path, e))?;
+
+    let mut dos_header = [0u8; 0x40];
+    if let Err(e) = file.read_exact(&mut dos_header) {
+        if e.kind() == ErrorKind::UnexpectedEof {
+            return Err("File too small for DOS header".to_string());
+        }
+        return Err(format!(
+            "Failed to read DOS header from {:?}: {}",
+            exe_path, e
+        ));
     }
 
-    if &bytes[0..2] != b"MZ" {
+    if &dos_header[0..2] != b"MZ" {
         return Err("Invalid DOS signature".to_string());
     }
 
-    let e_lfanew = u32::from_le_bytes([bytes[0x3C], bytes[0x3D], bytes[0x3E], bytes[0x3F]]);
-    let nt_offset =
-        usize::try_from(e_lfanew).map_err(|_| "NT header offset overflow".to_string())?;
+    let nt_offset = u64::from(u32::from_le_bytes([
+        dos_header[0x3C],
+        dos_header[0x3D],
+        dos_header[0x3E],
+        dos_header[0x3F],
+    ]));
 
-    let pe_sig_end = nt_offset
-        .checked_add(4)
-        .ok_or_else(|| "NT header offset overflow".to_string())?;
-    let machine_end = nt_offset
-        .checked_add(6)
-        .ok_or_else(|| "COFF header offset overflow".to_string())?;
+    file.seek(SeekFrom::Start(nt_offset))
+        .map_err(|e| format!("Failed to seek to NT header at {:?}: {}", exe_path, e))?;
 
-    if machine_end > bytes.len() {
-        return Err("NT/COFF header out of bounds".to_string());
+    let mut nt_and_coff_prefix = [0u8; 6];
+    if let Err(e) = file.read_exact(&mut nt_and_coff_prefix) {
+        if e.kind() == ErrorKind::UnexpectedEof {
+            return Err("NT/COFF header out of bounds".to_string());
+        }
+        return Err(format!(
+            "Failed to read NT/COFF header from {:?}: {}",
+            exe_path, e
+        ));
     }
 
-    if &bytes[nt_offset..pe_sig_end] != b"PE\0\0" {
+    if &nt_and_coff_prefix[0..4] != b"PE\0\0" {
         return Err("Invalid NT signature".to_string());
     }
 
     Ok(u16::from_le_bytes([
-        bytes[nt_offset + 4],
-        bytes[nt_offset + 5],
+        nt_and_coff_prefix[4],
+        nt_and_coff_prefix[5],
     ]))
 }
 
