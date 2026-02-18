@@ -97,10 +97,10 @@ fn runtime_needs_migration(runtime_dir: &Path) -> bool {
     let python_exe = crate::paths::get_python_exe_path(runtime_dir);
     if !python_exe.exists() {
         log::warn!(
-            "Migration: python executable missing in runtime {:?}, migration required",
+            "Migration: python executable missing in runtime {:?}, skip migration because architecture cannot be determined",
             runtime_dir
         );
-        return true;
+        return false;
     }
 
     match read_pe_machine(&python_exe) {
@@ -108,19 +108,19 @@ fn runtime_needs_migration(runtime_dir: &Path) -> bool {
         Ok(IMAGE_FILE_MACHINE_ARM64) => true,
         Ok(other) => {
             log::warn!(
-                "Migration: unexpected PE machine type 0x{:04X} for {:?}, migration required",
+                "Migration: unexpected PE machine type 0x{:04X} for {:?}, skip migration",
                 other,
                 python_exe
             );
-            true
+            false
         }
         Err(e) => {
             log::warn!(
-                "Migration: failed to read PE machine for {:?}: {}, migration required",
+                "Migration: failed to read PE machine for {:?}: {}, skip migration",
                 python_exe,
                 e
             );
-            true
+            false
         }
     }
 }
