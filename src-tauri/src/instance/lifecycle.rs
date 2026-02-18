@@ -222,11 +222,12 @@ pub async fn start_instance(
     let mut stdout_reader = BufReader::new(stdout).lines();
 
     tokio::spawn(async move {
+        let mut startup_sent = false;
         while let Ok(Some(line)) = stdout_reader.next_line().await {
             log_channel::emit_log(&instance_id_stdout, "info", &line);
-            if line.contains("AstrBot 启动完成") {
+            if !startup_sent && line.contains("AstrBot 启动完成") {
                 let _ = startup_tx.send(());
-                break;
+                startup_sent = true;
             }
         }
     });
