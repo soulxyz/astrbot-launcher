@@ -1,7 +1,8 @@
 use std::cmp::Ordering;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
-use reqwest::Client;
+use reqwest::{Client, Proxy};
 use tauri::{AppHandle, State};
 
 use crate::backup;
@@ -15,6 +16,8 @@ use crate::error::{AppError, Result};
 use crate::github::{self, GitHubRelease};
 use crate::instance::{self, InstanceStatus, ProcessManager};
 use crate::platform;
+use crate::proxy::build_proxy_url;
+use crate::sync_utils::{read_lock_recover, write_lock_recover};
 
 fn sort_installed_versions_semver(versions: &mut [InstalledVersion]) {
     versions.sort_by(|a, b| {
@@ -31,8 +34,69 @@ fn sort_installed_versions_semver(versions: &mut [InstalledVersion]) {
 }
 
 pub struct AppState {
-    pub client: Client,
+    pub client: RwLock<Client>,
     pub process_manager: Arc<ProcessManager>,
+}
+
+impl AppState {
+    fn client(&self) -> Client {
+        read_lock_recover(&self.client, "AppState.client").clone()
+    }
+
+    fn replace_client(&self, client: Client) {
+        *write_lock_recover(&self.client, "AppState.client") = client;
+    }
+}
+
+fn normalized_proxy_fields(
+    url: String,
+    port: String,
+    username: String,
+    password: String,
+) -> (String, String, String, String) {
+    let normalized_url = url.trim().to_string();
+    if normalized_url.is_empty() {
+        return (String::new(), String::new(), String::new(), String::new());
+    }
+
+    let normalized_port = port.trim().to_string();
+    let normalized_username = username.trim().to_string();
+    let normalized_password = password.trim().to_string();
+
+    (
+        normalized_url,
+        normalized_port,
+        normalized_username,
+        normalized_password,
+    )
+}
+
+fn build_http_client_with_proxy_fields(
+    url: &str,
+    port: &str,
+    username: &str,
+    password: &str,
+) -> Result<Client> {
+    let mut builder = Client::builder().timeout(Duration::from_secs(30));
+
+    if let Some(proxy_url) = build_proxy_url(url, port, username, password)? {
+        let proxy =
+            Proxy::all(proxy_url).map_err(|e| AppError::config(format!("代理地址无效: {}", e)))?;
+        builder = builder.proxy(proxy);
+    }
+
+    builder
+        .build()
+        .map_err(|e| AppError::network(format!("创建网络客户端失败: {}", e)))
+}
+
+pub(crate) fn build_http_client(config: &AppConfig) -> Result<Client> {
+    build_http_client_with_proxy_fields(
+        &config.proxy_url,
+        &config.proxy_port,
+        &config.proxy_username,
+        &config.proxy_password,
+    )
 }
 
 macro_rules! define_save_config_command {
@@ -118,7 +182,8 @@ pub fn is_macos() -> bool {
 pub async fn save_github_proxy(github_proxy: String, state: State<'_, AppState>) -> Result<()> {
     // Test connectivity first
     let url = github::build_api_url(&github_proxy);
-    download::check_url(&state.client, &url).await?;
+    let client = state.client();
+    download::check_url(&client, &url).await?;
     // Test passed, save
     with_config_mut(move |config| {
         config.github_proxy = github_proxy;
@@ -127,12 +192,57 @@ pub async fn save_github_proxy(github_proxy: String, state: State<'_, AppState>)
 }
 
 #[tauri::command]
+pub async fn save_proxy(
+    proxy_url: String,
+    proxy_port: String,
+    proxy_username: String,
+    proxy_password: String,
+    state: State<'_, AppState>,
+) -> Result<()> {
+    let (url, port, username, password) =
+        normalized_proxy_fields(proxy_url, proxy_port, proxy_username, proxy_password);
+
+    let next_client = build_http_client_with_proxy_fields(&url, &port, &username, &password)?;
+
+    if !url.is_empty() {
+        let cloudflare_url = "https://cloudflare.com/cdn-cgi/trace";
+        let cloudflare_result = download::check_url(&next_client, cloudflare_url).await;
+        if cloudflare_result.is_err() {
+            let baidu_url = "https://baidu.com";
+            let baidu_result = download::check_url(&next_client, baidu_url).await;
+            if baidu_result.is_err() {
+                return Err(AppError::network(
+                    "代理配置错误，无法连接 cloudflare.com 或 baidu.com",
+                ));
+            }
+        }
+    }
+
+    let previous_client = state.client();
+    state.replace_client(next_client);
+
+    if let Err(error) = with_config_mut(move |config| {
+        config.proxy_url = url;
+        config.proxy_port = port;
+        config.proxy_username = username;
+        config.proxy_password = password;
+        Ok(())
+    }) {
+        state.replace_client(previous_client);
+        return Err(error);
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn save_pypi_mirror(pypi_mirror: String, state: State<'_, AppState>) -> Result<()> {
     let normalized_default_index = component::normalize_default_index(&pypi_mirror);
     let check_url = format!("{}/", normalized_default_index);
 
     // Test connectivity first
-    download::check_url(&state.client, &check_url).await?;
+    let client = state.client();
+    download::check_url(&client, &check_url).await?;
 
     // Test passed, save
     let normalized_for_save = if pypi_mirror.trim().is_empty() {
@@ -197,15 +307,16 @@ async fn run_component_command(
     component_id: &str,
     action: ComponentCommandAction,
 ) -> Result<String> {
+    let client = state.client();
     let id = component::ComponentId::from_str_id(component_id)
         .ok_or_else(|| AppError::other(format!("Unknown component: {}", component_id)))?;
 
     match action {
         ComponentCommandAction::Install => {
-            component::install_component(&state.client, id, Some(app_handle)).await
+            component::install_component(&client, id, Some(app_handle)).await
         }
         ComponentCommandAction::Reinstall => {
-            component::reinstall_component(&state.client, id, Some(app_handle)).await
+            component::reinstall_component(&client, id, Some(app_handle)).await
         }
     }
 }
@@ -247,7 +358,8 @@ pub async fn fetch_releases(
     state: State<'_, AppState>,
     force_refresh: Option<bool>,
 ) -> Result<Vec<GitHubRelease>> {
-    github::fetch_releases(&state.client, force_refresh.unwrap_or(false)).await
+    let client = state.client();
+    github::fetch_releases(&client, force_refresh.unwrap_or(false)).await
 }
 
 // === Version Management ===
@@ -258,7 +370,8 @@ pub async fn install_version(
     state: State<'_, AppState>,
     release: GitHubRelease,
 ) -> Result<()> {
-    download::download_version(&state.client, &release, Some(&app_handle)).await
+    let client = state.client();
+    download::download_version(&client, &release, Some(&app_handle)).await
 }
 
 #[tauri::command]

@@ -14,6 +14,7 @@ export const OPERATION_KEYS = {
   backupDelete: 'backup:delete',
 
   advancedSaveGithubProxy: 'adv:save-github-proxy',
+  advancedSaveProxy: 'adv:save-proxy',
   advancedSavePypiMirror: 'adv:save-pypi-mirror',
   advancedSaveNodejsMirror: 'adv:save-nodejs-mirror',
   advancedSaveNpmRegistry: 'adv:save-npm-registry',

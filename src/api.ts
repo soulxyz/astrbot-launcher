@@ -12,6 +12,12 @@ export const api = {
   // Config
   // ========================================
   saveGithubProxy: (githubProxy: string) => invoke<void>('save_github_proxy', { githubProxy }),
+  saveProxy: (settings: {
+    proxyUrl: string;
+    proxyPort: string;
+    proxyUsername: string;
+    proxyPassword: string;
+  }) => invoke<void>('save_proxy', settings),
   savePypiMirror: (pypiMirror: string) => invoke<void>('save_pypi_mirror', { pypiMirror }),
   saveNodejsMirror: (nodejsMirror: string) => invoke<void>('save_nodejs_mirror', { nodejsMirror }),
   saveNpmRegistry: (npmRegistry: string) => invoke<void>('save_npm_registry', { npmRegistry }),

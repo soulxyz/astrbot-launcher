@@ -10,6 +10,14 @@ interface SourceSettingsCardProps {
   pypiSaving: boolean;
   nodejsMirrorSaving: boolean;
   npmRegistrySaving: boolean;
+  githubProxyCanSave: boolean;
+  pypiMirrorCanSave: boolean;
+  nodejsMirrorCanSave: boolean;
+  npmRegistryCanSave: boolean;
+  githubProxyError: string | null;
+  pypiMirrorError: string | null;
+  nodejsMirrorError: string | null;
+  npmRegistryError: string | null;
   onGithubProxyChange: (value: string) => void;
   onPypiMirrorChange: (value: string) => void;
   onNodejsMirrorChange: (value: string) => void;
@@ -26,6 +34,8 @@ interface SourceInputRowProps {
   value: string;
   placeholder: string;
   loading: boolean;
+  canSave: boolean;
+  error: string | null;
   onChange: (value: string) => void;
   onSave: () => Promise<void>;
 }
@@ -36,14 +46,21 @@ function SourceInputRow({
   value,
   placeholder,
   loading,
+  canSave,
+  error,
   onChange,
   onSave,
 }: SourceInputRowProps) {
   return (
-    <Form.Item label={label} extra={extra}>
+    <Form.Item
+      label={label}
+      extra={extra}
+      validateStatus={error ? 'error' : undefined}
+      help={error ?? undefined}
+    >
       <Space.Compact style={{ width: '100%' }}>
         <Input value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} />
-        <Button icon={<SaveOutlined />} loading={loading} onClick={() => void onSave()}>
+        <Button icon={<SaveOutlined />} loading={loading} disabled={!canSave} onClick={() => void onSave()}>
           保存
         </Button>
       </Space.Compact>
@@ -60,6 +77,14 @@ export function SourceSettingsCard({
   pypiSaving,
   nodejsMirrorSaving,
   npmRegistrySaving,
+  githubProxyCanSave,
+  pypiMirrorCanSave,
+  nodejsMirrorCanSave,
+  npmRegistryCanSave,
+  githubProxyError,
+  pypiMirrorError,
+  nodejsMirrorError,
+  npmRegistryError,
   onGithubProxyChange,
   onPypiMirrorChange,
   onNodejsMirrorChange,
@@ -78,6 +103,8 @@ export function SourceSettingsCard({
           value={githubProxy}
           placeholder="例如: https://cdn.gh-proxy.org"
           loading={githubSaving}
+          canSave={githubProxyCanSave}
+          error={githubProxyError}
           onChange={onGithubProxyChange}
           onSave={onSaveGithubProxy}
         />
@@ -87,6 +114,8 @@ export function SourceSettingsCard({
           value={pypiMirror}
           placeholder="例如: https://pypi.tuna.tsinghua.edu.cn/simple"
           loading={pypiSaving}
+          canSave={pypiMirrorCanSave}
+          error={pypiMirrorError}
           onChange={onPypiMirrorChange}
           onSave={onSavePypiMirror}
         />
@@ -96,6 +125,8 @@ export function SourceSettingsCard({
           value={nodejsMirror}
           placeholder="例如: https://npmmirror.com/mirrors/node"
           loading={nodejsMirrorSaving}
+          canSave={nodejsMirrorCanSave}
+          error={nodejsMirrorError}
           onChange={onNodejsMirrorChange}
           onSave={onSaveNodejsMirror}
         />
@@ -105,6 +136,8 @@ export function SourceSettingsCard({
           value={npmRegistry}
           placeholder="例如: https://registry.npmmirror.com"
           loading={npmRegistrySaving}
+          canSave={npmRegistryCanSave}
+          error={npmRegistryError}
           onChange={onNpmRegistryChange}
           onSave={onSaveNpmRegistry}
         />

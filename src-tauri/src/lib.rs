@@ -11,13 +11,14 @@ mod log_channel;
 mod paths;
 mod platform;
 mod process;
+mod proxy;
 mod setup;
 mod sync_utils;
 mod tray;
 mod updater;
 mod validation;
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use reqwest::Client;
@@ -80,12 +81,20 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())
-        .manage(AppState {
-            client: Client::builder()
-                .timeout(Duration::from_secs(30))
-                .build()
-                .expect("Failed to create HTTP client"),
-            process_manager,
+        .manage({
+            let startup_client = load_config()
+                .and_then(|cfg| commands::build_http_client(&cfg))
+                .unwrap_or_else(|e| {
+                    log::warn!("Failed to initialize configured proxy client: {}", e);
+                    Client::builder()
+                        .timeout(Duration::from_secs(30))
+                        .build()
+                        .expect("Failed to create fallback HTTP client")
+                });
+            AppState {
+                client: RwLock::new(startup_client),
+                process_manager,
+            }
         })
         .setup(move |app| setup::on_setup(app, pm_for_monitor))
         .on_window_event(move |window, event| {
@@ -101,6 +110,7 @@ pub fn run() {
             commands::rebuild_app_snapshot,
             // Config
             commands::save_github_proxy,
+            commands::save_proxy,
             commands::save_pypi_mirror,
             commands::save_nodejs_mirror,
             commands::save_npm_registry,
