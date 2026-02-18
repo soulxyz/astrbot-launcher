@@ -197,6 +197,9 @@ pub(super) fn graceful_signal(pid: u32) -> Result<()> {
 
 #[cfg(target_os = "windows")]
 pub fn force_kill(pid: u32) -> Result<()> {
+    use std::os::windows::process::CommandExt as _;
+    use windows::Win32::System::Threading::CREATE_NO_WINDOW;
+
     // Check if process is still alive before attempting to kill
     if !is_process_alive(pid) {
         log::debug!("Process {} is not alive, skipping force kill", pid);
@@ -206,6 +209,7 @@ pub fn force_kill(pid: u32) -> Result<()> {
 
     let output = std::process::Command::new("taskkill")
         .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .creation_flags(CREATE_NO_WINDOW.0)
         .output()
         .map_err(|e| AppError::process(format!("Failed to run taskkill: {e}")))?;
 
