@@ -33,6 +33,12 @@ const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(60);
 /// Number of consecutive health check failures before marking as unhealthy.
 const UNHEALTHY_THRESHOLD: u32 = 3;
 
+/// On Windows, number of consecutive health check failures before treating
+/// a failed process-alive check as definitive process exit.
+/// Derived from the backoff formula: `1 << 5 = 32 >= MAX_BACKOFF (30s)`.
+#[cfg(target_os = "windows")]
+const PROCESS_EXIT_THRESHOLD: u32 = 5;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum InstanceState {

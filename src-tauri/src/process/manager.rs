@@ -14,6 +14,8 @@ use super::control::{graceful_shutdown, is_expected_process_alive};
 use super::health::check_health;
 #[cfg(target_os = "windows")]
 use super::win_api::get_pid_on_port;
+#[cfg(target_os = "windows")]
+use super::PROCESS_EXIT_THRESHOLD;
 use super::{
     InstanceProcess, InstanceRuntimeSnapshot, InstanceState, RuntimeEvent, RuntimeEventReason,
     MONITOR_INTERVAL, UNHEALTHY_THRESHOLD,
@@ -28,6 +30,8 @@ struct InstanceCheckEntry {
     dashboard_enabled: bool,
     next_check_at: Option<Instant>,
     pid_exited: bool,
+    #[cfg(target_os = "windows")]
+    failure_count: u32,
 }
 
 /// Manages running instance processes.
@@ -147,6 +151,8 @@ impl ProcessManager {
     /// Get state for all tracked instances.
     ///
     /// - All instances: check `is_expected_process_alive` first; dead → `Stopped` (remove).
+    ///   - On Windows with dashboard enabled: defer exit until health check failures
+    ///     reach `PROCESS_EXIT_THRESHOLD` to tolerate unreliable process alive checks.
     /// - dashboard_enabled + alive: health check with exponential backoff.
     ///   - healthy → `Running` (update PID on Windows if needed)
     ///   - failures < UNHEALTHY_THRESHOLD → `Running` (tolerate)
@@ -168,6 +174,8 @@ impl ProcessManager {
                     dashboard_enabled: info.dashboard_enabled,
                     next_check_at: info.next_check_at,
                     pid_exited: info.pid_exited,
+                    #[cfg(target_os = "windows")]
+                    failure_count: info.failure_count,
                 })
                 .collect()
         };
@@ -181,9 +189,17 @@ impl ProcessManager {
                 !entry.pid_exited && is_expected_process_alive(entry.pid, &entry.executable_path);
 
             if !alive {
-                dead_instances.push(entry.id.clone());
-                results.insert(entry.id, InstanceState::Stopped);
-                continue;
+                #[cfg(target_os = "windows")]
+                let defer_to_health_check =
+                    entry.dashboard_enabled && entry.failure_count < PROCESS_EXIT_THRESHOLD;
+                #[cfg(not(target_os = "windows"))]
+                let defer_to_health_check = false;
+
+                if !defer_to_health_check {
+                    dead_instances.push(entry.id.clone());
+                    results.insert(entry.id, InstanceState::Stopped);
+                    continue;
+                }
             }
 
             if !entry.dashboard_enabled {
