@@ -22,6 +22,68 @@ AstrBot Launcher是一款用于图形化管理AstrBot的桌面应用程序，提
 
 在Windows ARM设备上，启动器会统一使用x86_64版本的Python运行时（通过系统仿真层运行），以确保与现有AstrBot版本的兼容性。
 
+## FAQ
+
+如果遇到以下问题，可以按照对应步骤进行故障排除。
+
+> [!important]
+> 请确保已升级到最新版本。
+
+### DLL加载失败（常见于Windows ARM64）
+
+```text
+ValueError: the greenlet library is required to use this function.  
+DLL load failed while importing _greenlet: The specified module could not be found.
+```
+
+**解决方案：**
+
+> [!note]
+> Windows ARM64也是安装下面的运行库，因为它同时包含了ARM64和X64二进制文件。
+
+请下载安装Microsoft Visual C++ Redistributable：
+
+点此链接下载： [https://aka.ms/vc14/vc_redist.x64.exe](https://aka.ms/vc14/vc_redist.x64.exe)
+
+### 依赖同步失败
+
+```text
+uv sync failed  
+Failed to uninstall package ...  
+Installation may result in an incomplete environment  
+missing RECORD file
+```
+
+**解决方案：**
+
+1. 打开：设置 → 高级
+2. 向下滚动至故障排除
+3. 选择对应实例
+4. 点击执行清空虚拟环境
+
+### OS error 5 拒绝访问
+
+```text
+OS error 5  
+拒绝访问
+Access is denied
+```
+
+**解决方案：**
+
+该问题通常情况下是文件被其他进程占用所致，可尝试以下方法解决：
+
+- 关闭正在占用文件的程序
+- 使用解除占用工具
+- 直接重启电脑
+
+常见的解除占用工具：
+
+- 360、火绒等安全软件自带工具
+- PowerToys 0.64及以上版本内置的Locksmith
+
+鉴于本项目无法对其他第三方解锁工具的安全性作出保证，故不在此处列举更多相关软件。
+
 ## 技术栈
 
 - 前端: React 19, Vite, Ant Design, TypeScript
