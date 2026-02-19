@@ -1,3 +1,5 @@
+![Logo](https://github.com/user-attachments/assets/d28490ba-17f7-4c44-a27c-a9bcb22dd036)
+
 # AstrBot Launcher
 
 AstrBot Launcher是一款用于图形化管理AstrBot的桌面应用程序，提供版本下载、实例管理、数据备份以及Python运行环境自动化配置等完整功能支持。
