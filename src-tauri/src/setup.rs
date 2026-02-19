@@ -6,7 +6,7 @@ use tauri::Manager as _;
 use webkit2gtk::{HardwareAccelerationPolicy, SettingsExt as _, WebViewExt as _};
 
 use crate::commands::{self, AppState};
-use crate::config::{load_config, with_config_mut};
+use crate::config::{load_config, load_manifest, with_manifest_mut};
 use crate::instance::{self, ProcessManager};
 use crate::log_channel;
 use crate::{tray, updater};
@@ -49,7 +49,8 @@ fn spawn_event_forwarder(app: &tauri::App) {
         loop {
             match rx.recv().await {
                 Ok(_event) => {
-                    if let Ok(snapshot) = commands::build_app_snapshot_with(&pm, load_config).await
+                    if let Ok(snapshot) =
+                        commands::build_app_snapshot_with(&pm, load_config, load_manifest).await
                     {
                         let _ = app_handle.emit("app-snapshot", &snapshot);
                     }
@@ -81,9 +82,9 @@ fn spawn_log_forwarder(app: &tauri::App) {
 }
 
 fn restore_instances(app: &tauri::App) {
-    if let Ok(cfg) = load_config() {
-        if cfg.persist_instance_state && !cfg.tracked_instances_snapshot.is_empty() {
-            let ids = cfg.tracked_instances_snapshot.clone();
+    if let (Ok(cfg), Ok(manifest)) = (load_config(), load_manifest()) {
+        if cfg.persist_instance_state && !manifest.tracked_instances_snapshot.is_empty() {
+            let ids = manifest.tracked_instances_snapshot.clone();
             let restore_handle = app.handle().clone();
             let restore_state: tauri::State<'_, AppState> = app.state();
             let restore_pm = Arc::clone(&restore_state.process_manager);
@@ -97,8 +98,8 @@ fn restore_instances(app: &tauri::App) {
                     }
                 }
                 // Clear the snapshot after restoration attempt
-                let _ = with_config_mut(|config| {
-                    config.tracked_instances_snapshot.clear();
+                let _ = with_manifest_mut(|manifest| {
+                    manifest.tracked_instances_snapshot.clear();
                     Ok(())
                 });
             });

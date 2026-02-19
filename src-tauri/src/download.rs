@@ -7,7 +7,7 @@ use reqwest::Client;
 use serde::de::DeserializeOwned;
 use tauri::{AppHandle, Emitter as _};
 
-use crate::config::{with_config_mut, InstalledVersion};
+use crate::config::{with_manifest_mut, InstalledVersion};
 use crate::error::{AppError, Result};
 use crate::github::{get_source_archive_url, GitHubRelease};
 use crate::paths::get_versions_dir;
@@ -242,11 +242,11 @@ pub async fn download_version(
     };
 
     let version_owned = version.to_string();
-    with_config_mut(move |config| {
-        config
+    with_manifest_mut(move |manifest| {
+        manifest
             .installed_versions
             .retain(|v| v.version != version_owned.as_str());
-        config.installed_versions.push(installed);
+        manifest.installed_versions.push(installed);
         Ok(())
     })?;
 
@@ -259,14 +259,14 @@ pub fn remove_version(version: &str) -> Result<()> {
     let zip_path = resolve_version_zip_path(version)?;
 
     let version_owned = version.to_string();
-    with_config_mut(|config| {
-        for inst in config.instances.values() {
+    with_manifest_mut(|manifest| {
+        for inst in manifest.instances.values() {
             if inst.version == version_owned.as_str() {
                 return Err(AppError::version_in_use(&version_owned, &inst.name));
             }
         }
 
-        config
+        manifest
             .installed_versions
             .retain(|v| v.version != version_owned.as_str());
         Ok(())

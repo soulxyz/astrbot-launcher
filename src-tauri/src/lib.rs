@@ -8,6 +8,7 @@ mod error;
 mod github;
 mod instance;
 mod log_channel;
+mod migration;
 mod paths;
 mod platform;
 mod process;
@@ -26,7 +27,7 @@ use tauri::Manager as _;
 use tauri_plugin_log::{fern, Target, TargetKind};
 
 use commands::AppState;
-use config::{load_config, with_config_mut};
+use config::{load_config, with_manifest_mut};
 pub use error::{AppError, ErrorKind, Result};
 use instance::ProcessManager;
 use log_channel::LogEntry;
@@ -41,9 +42,7 @@ pub fn run() {
     }
 
     paths::ensure_data_dirs().expect("Failed to create data directories");
-    component::migration::migrate_legacy_python_dirs();
-    #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
-    component::migration::migrate_windows_arm_python_component_if_needed();
+    migration::run_startup_migrations();
     github::init_releases_cache();
 
     let process_manager = Arc::new(ProcessManager::new());
@@ -155,8 +154,8 @@ pub fn run() {
                 if let Ok(cfg) = load_config() {
                     if cfg.persist_instance_state {
                         let tracked_ids = pm_for_exit.get_tracked_ids();
-                        let _ = with_config_mut(|config| {
-                            config.tracked_instances_snapshot = tracked_ids;
+                        let _ = with_manifest_mut(|manifest| {
+                            manifest.tracked_instances_snapshot = tracked_ids;
                             Ok(())
                         });
                     }

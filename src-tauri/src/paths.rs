@@ -17,6 +17,11 @@ pub fn config_path() -> PathBuf {
     get_data_dir().join("config.toml")
 }
 
+/// Get the path to the manifest file.
+pub fn manifest_path() -> PathBuf {
+    get_data_dir().join("manifest.toml")
+}
+
 /// Get the path to the releases cache file.
 pub fn version_list_cache_path() -> PathBuf {
     get_data_dir().join("version_list.json")

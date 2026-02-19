@@ -180,9 +180,9 @@ fn read_pe_machine(exe_path: &Path) -> Result<u16, String> {
 
 #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
 fn clear_tracked_instances_snapshot_for_python_migration() -> Result<(), String> {
-    crate::config::with_config_mut(|config| {
-        if !config.tracked_instances_snapshot.is_empty() {
-            config.tracked_instances_snapshot.clear();
+    crate::config::with_manifest_mut(|manifest| {
+        if !manifest.tracked_instances_snapshot.is_empty() {
+            manifest.tracked_instances_snapshot.clear();
             log::info!(
                 "Migration: cleared tracked_instances_snapshot due to Windows ARM Python migration"
             );

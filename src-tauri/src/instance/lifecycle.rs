@@ -12,7 +12,7 @@ use tokio::sync::{mpsc, oneshot};
 use super::crud::is_dashboard_enabled;
 use super::deploy::{deploy_instance, emit_progress};
 use crate::component;
-use crate::config::load_config;
+use crate::config::{load_config, load_manifest};
 use crate::error::{AppError, Result};
 use crate::log_channel;
 use crate::paths::{
@@ -76,7 +76,8 @@ pub async fn start_instance(
 
     // Find available port (even if dashboard disabled, AstrBot may need it internally)
     let config = load_config()?;
-    let instance_config = config
+    let manifest = load_manifest()?;
+    let instance_config = manifest
         .instances
         .get(instance_id)
         .ok_or_else(|| AppError::instance_not_found(instance_id))?;
