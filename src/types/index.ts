@@ -12,8 +12,6 @@ export interface AppError {
 // ========================================
 
 export interface AppConfig {
-  instances: Record<string, InstanceConfig>;
-  installed_versions: InstalledVersion[];
   github_proxy: string;
   proxy_url: string;
   proxy_port: string;

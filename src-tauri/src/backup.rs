@@ -9,7 +9,7 @@ use tar::Archive;
 use crate::archive::{
     append_dir_tree_to_zip, extract_tar_gz_mapped, extract_zip_mapped, parse_entry_rel_path,
 };
-use crate::config::{load_config, with_config_mut, BackupInfo, BackupMetadata, InstanceConfig};
+use crate::config::{load_manifest, with_manifest_mut, BackupInfo, BackupMetadata, InstanceConfig};
 use crate::error::{AppError, Result};
 use crate::paths::{get_backups_dir, get_instance_core_dir, get_instance_dir};
 use crate::validation::{resolve_backup_path, validate_instance_id};
@@ -93,8 +93,8 @@ fn create_backup_archive(
 /// hidden from the user-facing backup list.
 pub fn create_backup(instance_id: &str, auto_generated: bool) -> Result<String> {
     log::info!("Creating backup for instance {}", instance_id);
-    let config = load_config()?;
-    let instance = config
+    let manifest = load_manifest()?;
+    let instance = manifest
         .instances
         .get(instance_id)
         .ok_or_else(|| AppError::instance_not_found(instance_id))?;
@@ -249,8 +249,8 @@ pub fn resolve_restore_backup_input(backup_path: &str) -> Result<(PathBuf, Backu
 
 pub fn restore_backup_with_input(backup_path: PathBuf, metadata: BackupMetadata) -> Result<()> {
     // Check if version is installed
-    let config = load_config()?;
-    if !config
+    let manifest = load_manifest()?;
+    if !manifest
         .installed_versions
         .iter()
         .any(|v| v.version == metadata.version)
@@ -260,7 +260,7 @@ pub fn restore_backup_with_input(backup_path: PathBuf, metadata: BackupMetadata)
 
     // Validate original instance still exists
     let instance_id = &metadata.instance_id;
-    if !config.instances.contains_key(instance_id) {
+    if !manifest.instances.contains_key(instance_id) {
         return Err(AppError::instance_not_found(instance_id));
     }
 
@@ -271,8 +271,8 @@ pub fn restore_backup_with_input(backup_path: PathBuf, metadata: BackupMetadata)
     extract_backup_to_instance(&backup_path, &instance_dir, &core_dir)?;
 
     // Update instance version if different
-    with_config_mut(|config| {
-        if let Some(instance) = config.instances.get_mut(instance_id) {
+    with_manifest_mut(|manifest| {
+        if let Some(instance) = manifest.instances.get_mut(instance_id) {
             instance.version = metadata.version.clone();
         }
         Ok(())

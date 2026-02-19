@@ -8,7 +8,7 @@ use tauri::{AppHandle, Emitter as _};
 use super::types::DeployProgress;
 use crate::archive::extract_zip_flat;
 use crate::component;
-use crate::config::{load_config, with_config_mut};
+use crate::config::{load_config, load_manifest, with_config_mut};
 use crate::error::{AppError, Result};
 use crate::paths::{
     get_instance_core_dir, get_instance_pip_deps_marker_path, get_instance_venv_dir,
@@ -37,8 +37,8 @@ pub fn emit_progress(
 
 /// Deploy an instance by extracting the version zip and setting up venv.
 pub async fn deploy_instance(instance_id: &str, app_handle: &AppHandle) -> Result<()> {
-    let config = load_config()?;
-    let version = config
+    let manifest = load_manifest()?;
+    let version = manifest
         .instances
         .get(instance_id)
         .ok_or_else(|| AppError::instance_not_found(instance_id))?
@@ -60,8 +60,8 @@ pub async fn deploy_instance_with_version(
         version
     );
 
-    let config = load_config()?;
-    let installed = config
+    let manifest = load_manifest()?;
+    let installed = manifest
         .installed_versions
         .iter()
         .find(|v| v.version == version)

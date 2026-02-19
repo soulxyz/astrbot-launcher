@@ -7,14 +7,14 @@ use tauri::AppHandle;
 use super::deploy::{deploy_instance_with_version, emit_progress};
 use super::types::{CmdConfig, InstanceStatus};
 use crate::backup::{create_backup, delete_backup, restore_data_to_instance};
-use crate::config::{load_config, with_config_mut, AppConfig, InstanceConfig};
+use crate::config::{load_manifest, with_manifest_mut, AppManifest, InstanceConfig};
 use crate::error::{AppError, Result};
 use crate::paths::{get_instance_core_dir, get_instance_dir, get_instance_venv_dir};
 use crate::process::{InstanceRuntimeSnapshot, InstanceState, ProcessManager};
 use crate::validation::validate_instance_id;
 
-fn ensure_version_installed(config: &AppConfig, version: &str) -> Result<()> {
-    if config
+fn ensure_version_installed(manifest: &AppManifest, version: &str) -> Result<()> {
+    if manifest
         .installed_versions
         .iter()
         .any(|installed| installed.version == version)
@@ -35,8 +35,8 @@ fn update_instance_config(
     let name_owned = name.map(ToOwned::to_owned);
     let version_owned = version.map(ToOwned::to_owned);
 
-    with_config_mut(move |config| {
-        let instance = config
+    with_manifest_mut(move |manifest| {
+        let instance = manifest
             .instances
             .get_mut(&id)
             .ok_or_else(|| AppError::instance_not_found(&id))?;
@@ -96,8 +96,8 @@ pub(super) fn is_dashboard_enabled(instance_id: &str) -> bool {
 /// Create a new instance.
 pub fn create_instance(name: &str, version: &str, port: u16) -> Result<()> {
     log::info!("Creating instance '{}' with version {}", name, version);
-    let config = load_config()?;
-    ensure_version_installed(&config, version)?;
+    let manifest = load_manifest()?;
+    ensure_version_installed(&manifest, version)?;
 
     let id = uuid::Uuid::new_v4().to_string();
 
@@ -107,8 +107,8 @@ pub fn create_instance(name: &str, version: &str, port: u16) -> Result<()> {
 
     let name = name.to_string();
     let version = version.to_string();
-    with_config_mut(move |config| {
-        ensure_version_installed(config, &version)?;
+    with_manifest_mut(move |manifest| {
+        ensure_version_installed(manifest, &version)?;
 
         let key = id;
         let instance = InstanceConfig {
@@ -118,7 +118,7 @@ pub fn create_instance(name: &str, version: &str, port: u16) -> Result<()> {
             created_at: chrono::Utc::now().to_rfc3339(),
         };
 
-        config.instances.insert(key, instance);
+        manifest.instances.insert(key, instance);
         Ok(())
     })
 }
@@ -135,8 +135,8 @@ pub async fn delete_instance(
         return Err(AppError::instance_running());
     }
 
-    with_config_mut(|config| {
-        config
+    with_manifest_mut(|manifest| {
+        manifest
             .instances
             .remove(instance_id)
             .ok_or_else(|| AppError::instance_not_found(instance_id))?;
@@ -172,14 +172,14 @@ pub async fn update_instance(
 
     // Determine whether this is a version change
     let new_version = {
-        let config = load_config()?;
-        let instance = config
+        let manifest = load_manifest()?;
+        let instance = manifest
             .instances
             .get(instance_id)
             .ok_or_else(|| AppError::instance_not_found(instance_id))?;
         if let Some(v) = version {
             if instance.version != v {
-                ensure_version_installed(&config, v)?;
+                ensure_version_installed(&manifest, v)?;
                 Some(v.to_string())
             } else {
                 None
@@ -258,10 +258,10 @@ pub async fn update_instance(
 
 /// List all instances with their running status.
 pub async fn list_instances(process_manager: &ProcessManager) -> Result<Vec<InstanceStatus>> {
-    let config = load_config()?;
+    let manifest = load_manifest()?;
     let runtime_snapshot = process_manager.get_runtime_snapshot().await;
 
-    Ok(config
+    Ok(manifest
         .instances
         .iter()
         .map(|(id, inst)| (id.clone(), inst.clone()))

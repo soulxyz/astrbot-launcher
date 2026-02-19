@@ -9,7 +9,8 @@ use crate::backup;
 use crate::component;
 use crate::component::ComponentsSnapshot;
 use crate::config::{
-    load_config, reload_config, with_config_mut, AppConfig, BackupInfo, InstalledVersion,
+    load_config, load_manifest, reload_config, reload_manifest, with_config_mut, AppConfig,
+    AppManifest, BackupInfo, InstalledVersion,
 };
 use crate::download;
 use crate::error::{AppError, Result};
@@ -135,17 +136,20 @@ fn apply_uv_fallback(config: &mut AppConfig) {
 pub(crate) async fn build_app_snapshot_with(
     process_manager: &ProcessManager,
     load_config_fn: fn() -> Result<Arc<AppConfig>>,
+    load_manifest_fn: fn() -> Result<Arc<AppManifest>>,
 ) -> Result<AppSnapshot> {
     let config = load_config_fn()?;
+    let manifest = load_manifest_fn()?;
     let instances = instance::list_instances(process_manager).await?;
     let backups = backup::list_backups()?;
     let mut config_for_snapshot = (*config).clone();
     apply_uv_fallback(&mut config_for_snapshot);
-    sort_installed_versions_semver(&mut config_for_snapshot.installed_versions);
+    let mut versions = manifest.installed_versions.clone();
+    sort_installed_versions_semver(&mut versions);
 
     Ok(AppSnapshot {
         instances,
-        versions: config_for_snapshot.installed_versions.clone(),
+        versions,
         backups,
         components: component::build_components_snapshot(),
         config: config_for_snapshot,
@@ -154,12 +158,12 @@ pub(crate) async fn build_app_snapshot_with(
 
 #[tauri::command]
 pub async fn get_app_snapshot(state: State<'_, AppState>) -> Result<AppSnapshot> {
-    build_app_snapshot_with(&state.process_manager, load_config).await
+    build_app_snapshot_with(&state.process_manager, load_config, load_manifest).await
 }
 
 #[tauri::command]
 pub async fn rebuild_app_snapshot(state: State<'_, AppState>) -> Result<AppSnapshot> {
-    build_app_snapshot_with(&state.process_manager, reload_config).await
+    build_app_snapshot_with(&state.process_manager, reload_config, reload_manifest).await
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
