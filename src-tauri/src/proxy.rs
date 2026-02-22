@@ -17,7 +17,7 @@ const PROXY_ENV_KEYS: [&str; 6] = [
 
 const NO_PROXY_ENV_KEYS: [&str; 2] = ["NO_PROXY", "no_proxy"];
 
-const DEFAULT_NO_PROXY_VALUE: &str = concat!(
+pub(crate) const DEFAULT_NO_PROXY_VALUE: &str = concat!(
     "localhost,.localhost,localhost.localdomain,.local,.internal,.home.arpa,",
     "127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,100.64.0.0/10,",
     "::1/128,fc00::/7,fe80::/10"
@@ -60,27 +60,6 @@ pub fn build_proxy_url(
     Ok(Some(parsed.to_string()))
 }
 
-pub fn build_no_proxy_value() -> String {
-    let inherited_upper = std::env::var("NO_PROXY").unwrap_or_default();
-    let inherited_upper = inherited_upper.trim();
-    let inherited_lower = std::env::var("no_proxy").unwrap_or_default();
-    let inherited_lower = inherited_lower.trim();
-
-    if inherited_upper.is_empty() && inherited_lower.is_empty() {
-        return DEFAULT_NO_PROXY_VALUE.to_string();
-    }
-
-    if inherited_upper.is_empty() {
-        return format!("{DEFAULT_NO_PROXY_VALUE},{inherited_lower}");
-    }
-
-    if inherited_lower.is_empty() || inherited_upper == inherited_lower {
-        return format!("{DEFAULT_NO_PROXY_VALUE},{inherited_upper}");
-    }
-
-    format!("{DEFAULT_NO_PROXY_VALUE},{inherited_upper},{inherited_lower}")
-}
-
 pub fn build_proxy_env_vars(config: &AppConfig) -> Result<Vec<(OsString, OsString)>> {
     let Some(proxy_url) = build_proxy_url(
         &config.proxy_url,
@@ -91,14 +70,12 @@ pub fn build_proxy_env_vars(config: &AppConfig) -> Result<Vec<(OsString, OsStrin
     else {
         return Ok(Vec::new());
     };
-    let no_proxy = build_no_proxy_value();
-
     let mut vars = Vec::with_capacity(PROXY_ENV_KEYS.len() + NO_PROXY_ENV_KEYS.len());
     for key in PROXY_ENV_KEYS {
         vars.push((OsString::from(key), OsString::from(&proxy_url)));
     }
     for key in NO_PROXY_ENV_KEYS {
-        vars.push((OsString::from(key), OsString::from(&no_proxy)));
+        vars.push((OsString::from(key), OsString::from(DEFAULT_NO_PROXY_VALUE)));
     }
     Ok(vars)
 }

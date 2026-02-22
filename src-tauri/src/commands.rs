@@ -17,7 +17,7 @@ use crate::error::{AppError, Result};
 use crate::github::{self, GitHubRelease};
 use crate::instance::{self, InstanceStatus, ProcessManager};
 use crate::platform;
-use crate::proxy::{build_no_proxy_value, build_proxy_url};
+use crate::proxy::{build_proxy_url, DEFAULT_NO_PROXY_VALUE};
 use crate::sync_utils::{read_lock_recover, write_lock_recover};
 
 fn sort_installed_versions_semver(versions: &mut [InstalledVersion]) {
@@ -83,7 +83,7 @@ fn build_http_client_with_proxy_fields(
     if let Some(proxy_url) = build_proxy_url(url, port, username, password)? {
         let proxy = Proxy::all(proxy_url)
             .map_err(|e| AppError::config(format!("代理地址无效: {}", e)))?
-            .no_proxy(NoProxy::from_string(&build_no_proxy_value()));
+            .no_proxy(NoProxy::from_string(DEFAULT_NO_PROXY_VALUE));
         builder = builder.proxy(proxy);
     }
 
