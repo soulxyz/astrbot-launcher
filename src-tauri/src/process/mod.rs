@@ -43,6 +43,7 @@ const PROCESS_EXIT_THRESHOLD: u32 = 5;
 #[serde(rename_all = "snake_case")]
 pub enum InstanceState {
     Stopped,
+    Starting,
     Running,
     Unhealthy,
 }
@@ -69,6 +70,7 @@ pub struct InstanceProcess {
     pub executable_path: PathBuf,
     pub port: u16,
     pub dashboard_enabled: bool,
+    pub state: InstanceState,
     /// Whether the original child PID has exited (reported by `child.wait()`).
     pub(crate) pid_exited: bool,
     /// When to perform the next health check (for exponential backoff).
@@ -96,6 +98,7 @@ impl InstanceProcess {
             executable_path,
             port,
             dashboard_enabled,
+            state: InstanceState::Starting,
             pid_exited: false,
             next_check_at: None,
             failure_count: 0,

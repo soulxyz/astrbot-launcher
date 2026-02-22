@@ -30,6 +30,7 @@ struct InstanceCheckEntry {
     dashboard_enabled: bool,
     next_check_at: Option<Instant>,
     pid_exited: bool,
+    instance_state: InstanceState,
     #[cfg(target_os = "windows")]
     failure_count: u32,
 }
@@ -148,6 +149,14 @@ impl ProcessManager {
         }
     }
 
+    /// Update the state of a tracked instance.
+    pub fn set_state(&self, instance_id: &str, state: InstanceState) {
+        let mut procs = write_lock_recover(&self.processes, "ProcessManager.processes");
+        if let Some(info) = procs.get_mut(instance_id) {
+            info.state = state;
+        }
+    }
+
     /// Get state for all tracked instances.
     ///
     /// - All instances: check `is_expected_process_alive` first; dead → `Stopped` (remove).
@@ -174,6 +183,7 @@ impl ProcessManager {
                     dashboard_enabled: info.dashboard_enabled,
                     next_check_at: info.next_check_at,
                     pid_exited: info.pid_exited,
+                    instance_state: info.state.clone(),
                     #[cfg(target_os = "windows")]
                     failure_count: info.failure_count,
                 })
@@ -184,6 +194,12 @@ impl ProcessManager {
         let mut dead_instances = Vec::new();
 
         for entry in instances {
+            // Skip health check for instances that are still starting up
+            if entry.instance_state == InstanceState::Starting {
+                results.insert(entry.id, InstanceState::Starting);
+                continue;
+            }
+
             // First: check if the process is alive
             let alive =
                 !entry.pid_exited && is_expected_process_alive(entry.pid, &entry.executable_path);

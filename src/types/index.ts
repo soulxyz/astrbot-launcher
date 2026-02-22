@@ -61,7 +61,7 @@ export interface AppSnapshot {
   config: AppConfig;
 }
 
-export type InstanceState = 'stopped' | 'running' | 'unhealthy';
+export type InstanceState = 'stopped' | 'starting' | 'running' | 'unhealthy';
 
 export interface InstanceStatus {
   id: string;

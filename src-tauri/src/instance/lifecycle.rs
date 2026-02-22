@@ -20,7 +20,7 @@ use crate::paths::{
 };
 use crate::process::{
     can_signal_expected_process, check_port_available, find_available_port, force_kill,
-    graceful_shutdown, resolve_process_executable_path, ProcessManager,
+    graceful_shutdown, resolve_process_executable_path, InstanceState, ProcessManager,
 };
 use crate::proxy;
 use crate::validation::validate_instance_id;
@@ -253,6 +253,7 @@ pub async fn start_instance(
                 pid,
                 port
             );
+            process_manager.set_state(instance_id, InstanceState::Running);
             emit_progress(app_handle, instance_id, "done", "实例已启动", 100);
             Ok(port)
         }
