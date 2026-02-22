@@ -39,27 +39,20 @@ const UNHEALTHY_THRESHOLD: u32 = 3;
 #[cfg(target_os = "windows")]
 const PROCESS_EXIT_THRESHOLD: u32 = 5;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum InstanceState {
     Stopped,
+    Starting,
     Running,
+    Stopping,
     Unhealthy,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RuntimeEventReason {
-    ProcessTracked,
-    ProcessRemoved,
-    HealthUnhealthy,
-    HealthRestored,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RuntimeEvent {
     pub instance_id: String,
-    pub reason: RuntimeEventReason,
+    pub state: InstanceState,
 }
 
 /// Information about a running instance.
@@ -69,6 +62,7 @@ pub struct InstanceProcess {
     pub executable_path: PathBuf,
     pub port: u16,
     pub dashboard_enabled: bool,
+    pub state: InstanceState,
     /// Whether the original child PID has exited (reported by `child.wait()`).
     pub(crate) pid_exited: bool,
     /// When to perform the next health check (for exponential backoff).
@@ -96,6 +90,7 @@ impl InstanceProcess {
             executable_path,
             port,
             dashboard_enabled,
+            state: InstanceState::Starting,
             pid_exited: false,
             next_check_at: None,
             failure_count: 0,
