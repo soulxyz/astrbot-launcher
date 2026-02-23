@@ -1,8 +1,7 @@
 use std::cmp::Ordering;
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
 
-use reqwest::{Client, NoProxy, Proxy};
+use reqwest::Client;
 use tauri::{AppHandle, State};
 
 use crate::backup;
@@ -17,8 +16,11 @@ use crate::error::{AppError, Result};
 use crate::github::{self, GitHubRelease};
 use crate::instance::{self, InstanceStatus, ProcessManager};
 use crate::platform;
-use crate::proxy::{build_proxy_url, DEFAULT_NO_PROXY_VALUE};
-use crate::sync_utils::{read_lock_recover, write_lock_recover};
+use crate::utils::index_url::normalize_default_index;
+use crate::utils::net::build_http_client_with_proxy_fields;
+use crate::utils::net::check_url;
+use crate::utils::proxy::normalized_proxy_fields;
+use crate::utils::sync::{read_lock_recover, write_lock_recover};
 
 fn sort_installed_versions_semver(versions: &mut [InstalledVersion]) {
     versions.sort_by(|a, b| {
@@ -47,58 +49,6 @@ impl AppState {
     fn replace_client(&self, client: Client) {
         *write_lock_recover(&self.client, "AppState.client") = client;
     }
-}
-
-fn normalized_proxy_fields(
-    url: String,
-    port: String,
-    username: String,
-    password: String,
-) -> (String, String, String, String) {
-    let normalized_url = url.trim().to_string();
-    if normalized_url.is_empty() {
-        return (String::new(), String::new(), String::new(), String::new());
-    }
-
-    let normalized_port = port.trim().to_string();
-    let normalized_username = username.trim().to_string();
-    let normalized_password = password.trim().to_string();
-
-    (
-        normalized_url,
-        normalized_port,
-        normalized_username,
-        normalized_password,
-    )
-}
-
-fn build_http_client_with_proxy_fields(
-    url: &str,
-    port: &str,
-    username: &str,
-    password: &str,
-) -> Result<Client> {
-    let mut builder = Client::builder().timeout(Duration::from_secs(30));
-
-    if let Some(proxy_url) = build_proxy_url(url, port, username, password)? {
-        let proxy = Proxy::all(proxy_url)
-            .map_err(|e| AppError::config(format!("代理地址无效: {}", e)))?
-            .no_proxy(NoProxy::from_string(DEFAULT_NO_PROXY_VALUE));
-        builder = builder.proxy(proxy);
-    }
-
-    builder
-        .build()
-        .map_err(|e| AppError::network(format!("创建网络客户端失败: {}", e)))
-}
-
-pub(crate) fn build_http_client(config: &AppConfig) -> Result<Client> {
-    build_http_client_with_proxy_fields(
-        &config.proxy_url,
-        &config.proxy_port,
-        &config.proxy_username,
-        &config.proxy_password,
-    )
 }
 
 macro_rules! define_save_config_command {
@@ -181,7 +131,7 @@ pub async fn save_github_proxy(github_proxy: String, state: State<'_, AppState>)
     // Test connectivity first
     let url = github::build_api_url(&github_proxy);
     let client = state.client();
-    download::check_url(&client, &url).await?;
+    check_url(&client, &url).await?;
     // Test passed, save
     with_config_mut(move |config| {
         config.github_proxy = github_proxy;
@@ -204,10 +154,10 @@ pub async fn save_proxy(
 
     if !url.is_empty() {
         let cloudflare_url = "https://cloudflare.com/cdn-cgi/trace";
-        let cloudflare_result = download::check_url(&next_client, cloudflare_url).await;
+        let cloudflare_result = check_url(&next_client, cloudflare_url).await;
         if cloudflare_result.is_err() {
             let baidu_url = "https://baidu.com";
-            let baidu_result = download::check_url(&next_client, baidu_url).await;
+            let baidu_result = check_url(&next_client, baidu_url).await;
             if baidu_result.is_err() {
                 return Err(AppError::network(
                     "代理配置错误，无法连接 cloudflare.com 或 baidu.com",
@@ -235,12 +185,12 @@ pub async fn save_proxy(
 
 #[tauri::command]
 pub async fn save_pypi_mirror(pypi_mirror: String, state: State<'_, AppState>) -> Result<()> {
-    let normalized_default_index = component::normalize_default_index(&pypi_mirror);
-    let check_url = format!("{}/", normalized_default_index);
+    let normalized_default_index = normalize_default_index(&pypi_mirror);
+    let check_url_value = format!("{}/", normalized_default_index);
 
     // Test connectivity first
     let client = state.client();
-    download::check_url(&client, &check_url).await?;
+    check_url(&client, &check_url_value).await?;
 
     // Test passed, save
     let normalized_for_save = if pypi_mirror.trim().is_empty() {

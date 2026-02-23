@@ -4,12 +4,11 @@ use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use crate::error::{AppError, Result};
+use crate::utils::archive_path::parse_entry_rel_path;
 
 use super::extract::write_entry;
 use super::links::{create_queued_symlinks, queue_symlink, QueuedSymlink};
-use super::path::{
-    detect_common_top_dir, parse_entry_rel_path, resolve_within_dir, strip_common_top_dir,
-};
+use super::path::{detect_common_top_dir, resolve_within_dir, strip_common_top_dir};
 
 /// Append a directory recursively to a zip archive under the provided prefix.
 ///

@@ -2,6 +2,7 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use crate::error::{AppError, Result};
+use crate::utils::archive_path::parse_entry_rel_path;
 
 pub(super) fn normalize_entry_path(path: &str) -> String {
     path.replace('\\', "/")
@@ -14,36 +15,6 @@ fn has_windows_drive_prefix(path: &str) -> bool {
 
 fn first_segment(path: &str) -> Option<&str> {
     path.split('/').next()
-}
-
-/// Convert an archive entry path to a relative PathBuf, rejecting empty, traversal,
-/// or control-character-containing paths.
-pub(crate) fn parse_entry_rel_path(raw: &str) -> Option<PathBuf> {
-    if raw.chars().any(|c| c.is_control()) {
-        return None;
-    }
-
-    let normalized = normalize_entry_path(raw);
-    let first = first_segment(&normalized)?;
-    if first.is_empty() || has_windows_drive_prefix(&normalized) {
-        return None;
-    }
-
-    let mut relative = PathBuf::new();
-
-    for part in normalized.split('/') {
-        match part {
-            "" | "." => {}
-            ".." => return None,
-            _ => relative.push(part),
-        }
-    }
-
-    if relative.as_os_str().is_empty() {
-        return None;
-    }
-
-    Some(relative)
 }
 
 /// Canonicalize the longest existing prefix of a path, appending any remaining components.

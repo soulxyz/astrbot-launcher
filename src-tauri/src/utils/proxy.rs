@@ -23,7 +23,7 @@ pub(crate) const DEFAULT_NO_PROXY_VALUE: &str = concat!(
     "::1/128,fc00::/7,fe80::/10"
 );
 
-pub fn build_proxy_url(
+pub(crate) fn build_proxy_url(
     url: &str,
     port: &str,
     username: &str,
@@ -60,7 +60,30 @@ pub fn build_proxy_url(
     Ok(Some(parsed.to_string()))
 }
 
-pub fn build_proxy_env_vars(config: &AppConfig) -> Result<Vec<(OsString, OsString)>> {
+pub(crate) fn normalized_proxy_fields(
+    url: String,
+    port: String,
+    username: String,
+    password: String,
+) -> (String, String, String, String) {
+    let normalized_url = url.trim().to_string();
+    if normalized_url.is_empty() {
+        return (String::new(), String::new(), String::new(), String::new());
+    }
+
+    let normalized_port = port.trim().to_string();
+    let normalized_username = username.trim().to_string();
+    let normalized_password = password.trim().to_string();
+
+    (
+        normalized_url,
+        normalized_port,
+        normalized_username,
+        normalized_password,
+    )
+}
+
+pub(crate) fn build_proxy_env_vars(config: &AppConfig) -> Result<Vec<(OsString, OsString)>> {
     let Some(proxy_url) = build_proxy_url(
         &config.proxy_url,
         &config.proxy_port,
@@ -80,7 +103,7 @@ pub fn build_proxy_env_vars(config: &AppConfig) -> Result<Vec<(OsString, OsStrin
     Ok(vars)
 }
 
-pub fn apply_proxy_env(cmd: &mut Command, env_vars: &[(OsString, OsString)]) {
+pub(crate) fn apply_proxy_env(cmd: &mut Command, env_vars: &[(OsString, OsString)]) {
     if env_vars.is_empty() {
         for key in PROXY_ENV_KEYS {
             cmd.env_remove(key);

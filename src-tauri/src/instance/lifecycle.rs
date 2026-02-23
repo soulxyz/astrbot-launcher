@@ -14,16 +14,17 @@ use super::deploy::{deploy_instance, emit_progress};
 use crate::component;
 use crate::config::{load_config, load_manifest};
 use crate::error::{AppError, Result};
-use crate::log_channel;
-use crate::paths::{
-    get_instance_core_dir, get_instance_venv_dir, get_uv_cache_dir, get_venv_python,
-};
 use crate::process::{
     can_signal_expected_process, check_port_available, find_available_port, force_kill,
     graceful_shutdown, resolve_process_executable_path, InstanceState, ProcessManager,
 };
-use crate::proxy;
-use crate::validation::validate_instance_id;
+use crate::utils::index_url::normalize_default_index;
+use crate::utils::log_bus as log_channel;
+use crate::utils::paths::{
+    get_instance_core_dir, get_instance_venv_dir, get_uv_cache_dir, get_venv_python,
+};
+use crate::utils::proxy;
+use crate::utils::validation::validate_instance_id;
 
 const STARTUP_LOG_TIMEOUT_SECS: u64 = 300;
 
@@ -81,7 +82,7 @@ pub async fn start_instance(
         .instances
         .get(instance_id)
         .ok_or_else(|| AppError::instance_not_found(instance_id))?;
-    let default_index = component::normalize_default_index(&config.pypi_mirror);
+    let default_index = normalize_default_index(&config.pypi_mirror);
     let proxy_env_vars = match proxy::build_proxy_env_vars(&config) {
         Ok(vars) => vars,
         Err(e) => {

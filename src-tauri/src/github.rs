@@ -6,10 +6,11 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 use crate::config::load_config;
-use crate::download::fetch_json;
 use crate::error::Result;
-use crate::paths::{ensure_data_dirs, version_list_cache_path};
-use crate::sync_utils::{read_lock_recover, write_lock_recover};
+use crate::utils::index_url::wrap_with_proxy;
+use crate::utils::net::fetch_json;
+use crate::utils::paths::{ensure_data_dirs, version_list_cache_path};
+use crate::utils::sync::{read_lock_recover, write_lock_recover};
 
 const ASTRBOT_REPO: &str = "AstrBotDevs/AstrBot";
 const RELEASES_CACHE_TTL_MS: u64 = 8 * 60 * 60 * 1000;
@@ -123,17 +124,6 @@ pub fn build_api_url(proxy: &str) -> String {
         ASTRBOT_REPO
     );
     wrap_with_proxy(proxy, &raw)
-}
-
-/// Wrap a URL with the GitHub proxy prefix.
-/// If proxy is empty, returns the original URL unchanged.
-pub fn wrap_with_proxy(proxy: &str, url: &str) -> String {
-    if proxy.is_empty() {
-        url.to_string()
-    } else {
-        let base = proxy.trim_end_matches('/');
-        format!("{}/{}", base, url)
-    }
 }
 
 /// Build a raw download URL, optionally using a GitHub proxy.

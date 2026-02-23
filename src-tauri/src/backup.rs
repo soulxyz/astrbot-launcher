@@ -6,13 +6,13 @@ use std::path::{Path, PathBuf};
 use flate2::read::GzDecoder;
 use tar::Archive;
 
-use crate::archive::{
-    append_dir_tree_to_zip, extract_tar_gz_mapped, extract_zip_mapped, parse_entry_rel_path,
-};
+use crate::archive::{append_dir_tree_to_zip, extract_tar_gz_mapped, extract_zip_mapped};
 use crate::config::{load_manifest, with_manifest_mut, BackupInfo, BackupMetadata, InstanceConfig};
 use crate::error::{AppError, Result};
-use crate::paths::{get_backups_dir, get_instance_core_dir, get_instance_dir};
-use crate::validation::{resolve_backup_path, validate_instance_id};
+use crate::utils::archive_path::parse_entry_rel_path;
+use crate::utils::paths::{get_backups_dir, get_instance_core_dir, get_instance_dir};
+use crate::utils::validation::validate_instance_id;
+use crate::validation::resolve_backup_path;
 
 /// Check if a backup path is in tar.gz format.
 fn is_tar_gz(path: &Path) -> bool {

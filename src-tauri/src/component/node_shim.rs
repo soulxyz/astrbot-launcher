@@ -7,7 +7,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use crate::error::{AppError, Result};
-use crate::paths::{
+use crate::utils::paths::{
     get_component_dir, get_node_bin_dir, get_node_exe_path, get_nodejs_shim_dir, get_npm_exe_path,
     get_npm_prefix_bin_dir, get_npm_prefix_modules_dir, get_npx_exe_path,
 };

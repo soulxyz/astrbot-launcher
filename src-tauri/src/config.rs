@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, Result};
-use crate::paths::{config_path, ensure_data_dirs, manifest_path};
-use crate::sync_utils::{lock_mutex_recover, read_lock_recover, write_lock_recover};
+use crate::utils::paths::{config_path, ensure_data_dirs, manifest_path};
+use crate::utils::sync::{lock_mutex_recover, read_lock_recover, write_lock_recover};
 
 static CONFIG_LOCK: Mutex<()> = Mutex::new(());
 static CONFIG_CACHE: OnceLock<RwLock<Arc<AppConfig>>> = OnceLock::new();

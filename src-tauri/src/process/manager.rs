@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use reqwest::Client;
 use tokio::sync::broadcast;
 
-use crate::sync_utils::{read_lock_recover, write_lock_recover};
+use crate::utils::sync::{read_lock_recover, write_lock_recover};
 
 use super::control::{graceful_shutdown, is_expected_process_alive};
 use super::health::check_health;

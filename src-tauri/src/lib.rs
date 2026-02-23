@@ -7,16 +7,13 @@ mod download;
 mod error;
 mod github;
 mod instance;
-mod log_channel;
 mod migration;
-mod paths;
 mod platform;
 mod process;
-mod proxy;
 mod setup;
-mod sync_utils;
 mod tray;
 mod updater;
+mod utils;
 mod validation;
 
 use std::sync::{Arc, RwLock};
@@ -30,7 +27,7 @@ use commands::AppState;
 use config::{load_config, with_manifest_mut};
 pub use error::{AppError, ErrorKind, Result};
 use instance::ProcessManager;
-use log_channel::LogEntry;
+use utils::log_bus::LogEntry;
 
 #[allow(clippy::expect_used)]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -41,14 +38,14 @@ pub fn run() {
         std::env::set_var("GDK_BACKEND", "x11");
     }
 
-    paths::ensure_data_dirs().expect("Failed to create data directories");
+    utils::paths::ensure_data_dirs().expect("Failed to create data directories");
     migration::run_startup_migrations();
     github::init_releases_cache();
 
     let process_manager = Arc::new(ProcessManager::new());
     let pm_for_exit = Arc::clone(&process_manager);
     let pm_for_monitor = Arc::clone(&process_manager);
-    let dispatch_sender = log_channel::init_log_channel();
+    let dispatch_sender = utils::log_bus::init_log_channel();
     let dispatch = tauri_plugin_log::fern::Dispatch::new().chain(
         tauri_plugin_log::fern::Output::call(move |record| {
             let _ = dispatch_sender.send(LogEntry {
@@ -84,7 +81,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage({
             let startup_client = load_config()
-                .and_then(|cfg| commands::build_http_client(&cfg))
+                .and_then(|cfg| utils::net::build_http_client(&cfg))
                 .unwrap_or_else(|e| {
                     log::warn!("Failed to initialize configured proxy client: {}", e);
                     Client::builder()

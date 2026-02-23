@@ -2,14 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::error::{AppError, Result};
-use crate::paths::{get_data_dir, get_version_zip_path, get_versions_dir};
-
-pub fn validate_instance_id(instance_id: &str) -> Result<()> {
-    if uuid::Uuid::parse_str(instance_id).is_err() {
-        return Err(AppError::other("Invalid instance id"));
-    }
-    Ok(())
-}
+use crate::utils::paths::{get_data_dir, get_version_zip_path, get_versions_dir};
 
 pub fn resolve_backup_path(backup_path: &str, require_exists: bool) -> Result<PathBuf> {
     let backups_dir = get_data_dir().join("backups");
