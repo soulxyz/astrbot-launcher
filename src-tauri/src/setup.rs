@@ -8,7 +8,7 @@ use webkit2gtk::{HardwareAccelerationPolicy, SettingsExt as _, WebViewExt as _};
 use crate::commands::{self, AppState};
 use crate::config::{load_config, load_manifest, with_manifest_mut};
 use crate::instance::{self, ProcessManager};
-use crate::log_channel;
+use crate::utils::log_bus as log_channel;
 use crate::{tray, updater};
 
 pub fn on_setup(

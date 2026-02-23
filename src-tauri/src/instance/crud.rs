@@ -9,9 +9,9 @@ use super::types::{CmdConfig, InstanceStatus};
 use crate::backup::{create_backup, delete_backup, restore_data_to_instance};
 use crate::config::{load_manifest, with_manifest_mut, AppManifest, InstanceConfig};
 use crate::error::{AppError, Result};
-use crate::paths::{get_instance_core_dir, get_instance_dir, get_instance_venv_dir};
 use crate::process::{InstanceRuntimeSnapshot, InstanceState, ProcessManager};
-use crate::validation::validate_instance_id;
+use crate::utils::paths::{get_instance_core_dir, get_instance_dir, get_instance_venv_dir};
+use crate::utils::validation::validate_instance_id;
 
 fn ensure_version_installed(manifest: &AppManifest, version: &str) -> Result<()> {
     if manifest

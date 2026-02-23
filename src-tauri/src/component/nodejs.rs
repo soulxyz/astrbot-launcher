@@ -7,13 +7,13 @@ use tauri::AppHandle;
 use super::common::install_from_archive_with_progress;
 use crate::archive::ArchiveFormat;
 use crate::config::load_config;
-use crate::download::fetch_json;
 use crate::error::{AppError, Result};
-use crate::paths::{
+use crate::platform::get_nodejs_os_arch;
+use crate::utils::net::fetch_json;
+use crate::utils::paths::{
     get_component_dir, get_node_exe_path, get_nodejs_npm_cache, get_nodejs_npm_prefix,
     get_npm_exe_path, get_npm_prefix_modules_dir, get_npx_exe_path,
 };
-use crate::platform::get_nodejs_os_arch;
 
 #[derive(Deserialize)]
 struct NodeVersionEntry {

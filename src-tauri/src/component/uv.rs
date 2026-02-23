@@ -4,14 +4,14 @@ use reqwest::Client;
 use tauri::AppHandle;
 use tokio::process::Command;
 
-use super::common::{install_from_archive_with_progress, normalize_default_index};
+use super::common::install_from_archive_with_progress;
 use crate::archive::ArchiveFormat;
 use crate::config::{load_config, AppConfig};
 use crate::error::{AppError, Result};
-use crate::github::wrap_with_proxy;
-use crate::paths::{get_component_dir, get_uv_cache_dir, get_uv_exe_path, get_uvx_exe_path};
 use crate::platform::get_uv_archive_name;
-use crate::proxy;
+use crate::utils::index_url::{normalize_default_index, wrap_with_proxy};
+use crate::utils::paths::{get_component_dir, get_uv_cache_dir, get_uv_exe_path, get_uvx_exe_path};
+use crate::utils::proxy;
 
 const UV_VERSION: &str = "0.10.2";
 

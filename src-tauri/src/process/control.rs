@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use super::GRACEFUL_SHUTDOWN_TIMEOUT;
 use crate::error::{AppError, Result};
 #[cfg(target_os = "windows")]
-use crate::paths::{get_python_exe_path, get_python_runtime_dir};
+use crate::utils::paths::{get_python_exe_path, get_python_runtime_dir};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExecutablePathMatch {

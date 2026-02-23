@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::paths::{get_component_dir, get_data_dir};
+use crate::utils::paths::{get_component_dir, get_data_dir};
 
 /// Migrate legacy `python/` and `compat_python/` directories to the unified
 /// `components/python/py312` and `components/python/py310` layout.
@@ -94,7 +94,7 @@ fn runtime_needs_migration(runtime_dir: &Path) -> bool {
         return false;
     }
 
-    let python_exe = crate::paths::get_python_exe_path(runtime_dir);
+    let python_exe = crate::utils::paths::get_python_exe_path(runtime_dir);
     if !python_exe.exists() {
         log::warn!(
             "Migration: python executable missing in runtime {:?}, skip migration because architecture cannot be determined",

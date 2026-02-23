@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{AppConfig, AppManifest, InstalledVersion, InstanceConfig};
 use crate::error::{AppError, Result};
-use crate::paths::{config_path, ensure_data_dirs, manifest_path};
+use crate::utils::paths::{config_path, ensure_data_dirs, manifest_path};
 
 const MANIFEST_FIELDS: [&str; 3] = [
     "instances",

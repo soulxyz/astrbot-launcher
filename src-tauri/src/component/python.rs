@@ -4,14 +4,15 @@ use reqwest::Client;
 use tauri::AppHandle;
 use tokio::process::Command;
 
-use super::common::{install_from_archive_with_progress, normalize_default_index};
+use super::common::install_from_archive_with_progress;
 use crate::archive::ArchiveFormat;
 use crate::config::{load_config, AppConfig};
 use crate::error::{AppError, Result};
-use crate::github::{fetch_python_releases, wrap_with_proxy};
-use crate::paths::{get_python_exe_path, get_python_runtime_dir, get_venv_python};
+use crate::github::fetch_python_releases;
 use crate::platform::find_python_asset_for_version;
-use crate::proxy;
+use crate::utils::index_url::{normalize_default_index, wrap_with_proxy};
+use crate::utils::paths::{get_python_exe_path, get_python_runtime_dir, get_venv_python};
+use crate::utils::proxy;
 
 const RUNTIME_PY310: &str = "py310";
 const RUNTIME_PY312: &str = "py312";

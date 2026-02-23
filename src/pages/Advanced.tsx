@@ -108,12 +108,7 @@ export default function Advanced() {
     }
   }, [config, initialized]);
 
-  const proxyValidation = validateProxySettings(
-    proxyUrl,
-    proxyPort,
-    proxyUsername,
-    proxyPassword
-  );
+  const proxyValidation = validateProxySettings(proxyUrl, proxyPort, proxyUsername, proxyPassword);
   const proxyNormalized = proxyValidation.normalized;
   const proxyError = proxyValidation.error;
   const proxyDirty =
@@ -133,11 +128,13 @@ export default function Advanced() {
   const nodejsMirrorError = validateNodejsMirror(nodejsMirrorNormalized);
   const npmRegistryError = validateNpmRegistry(npmRegistryNormalized);
 
-  const githubProxyDirty = githubProxyNormalized !== normalizeInputValue(config?.github_proxy ?? '');
+  const githubProxyDirty =
+    githubProxyNormalized !== normalizeInputValue(config?.github_proxy ?? '');
   const pypiMirrorDirty = pypiMirrorNormalized !== normalizeInputValue(config?.pypi_mirror ?? '');
   const nodejsMirrorDirty =
     nodejsMirrorNormalized !== normalizeInputValue(config?.nodejs_mirror ?? '');
-  const npmRegistryDirty = npmRegistryNormalized !== normalizeInputValue(config?.npm_registry ?? '');
+  const npmRegistryDirty =
+    npmRegistryNormalized !== normalizeInputValue(config?.npm_registry ?? '');
 
   const githubProxyCanSave = githubProxyDirty && !githubProxyError && !githubSaving;
   const pypiMirrorCanSave = pypiMirrorDirty && !pypiMirrorError && !pypiSaving;

@@ -14,9 +14,8 @@ use reqwest::Client;
 use tauri::AppHandle;
 
 use crate::error::{AppError, Result};
-use crate::paths::{get_component_dir, get_node_exe_path, get_nodejs_shim_dir};
+use crate::utils::paths::{get_component_dir, get_node_exe_path, get_nodejs_shim_dir};
 
-pub use common::normalize_default_index;
 pub use node_shim::generate_shims;
 pub use nodejs::build_nodejs_env_vars;
 pub use python::{create_venv, pip_install_requirements};

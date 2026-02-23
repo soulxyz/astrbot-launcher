@@ -3,12 +3,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::error::{AppError, Result};
+use crate::utils::archive_path::parse_entry_rel_path;
 
 use super::extract::write_entry;
 use super::links::{create_hard_link_entry, create_queued_symlinks, queue_symlink, QueuedSymlink};
 use super::path::{
-    finalize_common_top_dir, parse_entry_rel_path, resolve_within_dir, scan_common_top_dir,
-    strip_common_top_dir, validate_rel_link_target,
+    finalize_common_top_dir, resolve_within_dir, scan_common_top_dir, strip_common_top_dir,
+    validate_rel_link_target,
 };
 
 /// Extract tar.gz entries using a caller-provided destination resolver.

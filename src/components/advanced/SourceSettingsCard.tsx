@@ -60,7 +60,12 @@ function SourceInputRow({
     >
       <Space.Compact style={{ width: '100%' }}>
         <Input value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} />
-        <Button icon={<SaveOutlined />} loading={loading} disabled={!canSave} onClick={() => void onSave()}>
+        <Button
+          icon={<SaveOutlined />}
+          loading={loading}
+          disabled={!canSave}
+          onClick={() => void onSave()}
+        >
           保存
         </Button>
       </Space.Compact>

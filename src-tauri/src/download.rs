@@ -4,21 +4,14 @@ use std::path::Path;
 
 use futures_util::StreamExt as _;
 use reqwest::Client;
-use serde::de::DeserializeOwned;
 use tauri::{AppHandle, Emitter as _};
 
 use crate::config::{with_manifest_mut, InstalledVersion};
 use crate::error::{AppError, Result};
 use crate::github::{get_source_archive_url, GitHubRelease};
-use crate::paths::get_versions_dir;
+use crate::utils::net::{ensure_success_status, send_get};
+use crate::utils::paths::get_versions_dir;
 use crate::validation::resolve_version_zip_path;
-
-const USER_AGENT: &str = concat!(
-    env!("CARGO_PKG_NAME"),
-    "/",
-    env!("CARGO_PKG_VERSION"),
-    " (+https://github.com/AstrBotDevs/astrbot-launcher)"
-);
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DownloadProgress {
@@ -64,34 +57,6 @@ fn compute_percent_0_99(downloaded: u64, total: Option<u64>) -> Option<u8> {
     }
     let p = (downloaded.saturating_mul(99)).saturating_div(t);
     Some(p.min(99) as u8)
-}
-
-fn build_get_request<'a>(client: &'a Client, url: &'a str) -> reqwest::RequestBuilder {
-    client.get(url).header("User-Agent", USER_AGENT)
-}
-
-async fn send_get(
-    client: &Client,
-    url: &str,
-    accept_json: bool,
-) -> std::result::Result<reqwest::Response, reqwest::Error> {
-    let request = if accept_json {
-        build_get_request(client, url).header("Accept", "application/json")
-    } else {
-        build_get_request(client, url)
-    };
-    request.send().await
-}
-
-fn ensure_success_status(
-    resp: &reqwest::Response,
-    make_error: impl FnOnce(String) -> AppError,
-) -> Result<()> {
-    if resp.status().is_success() {
-        Ok(())
-    } else {
-        Err(make_error(resp.status().to_string()))
-    }
 }
 
 /// Download a file from `url` and stream it to `dest`.
@@ -167,28 +132,6 @@ pub async fn download_file(
             "下载完成",
         );
     }
-
-    Ok(())
-}
-
-/// Fetch JSON from `url` and deserialize into `T`.
-pub async fn fetch_json<T: DeserializeOwned>(client: &Client, url: &str) -> Result<T> {
-    let resp = send_get(client, url, true)
-        .await
-        .map_err(|e| AppError::network(e.to_string()))?;
-    ensure_success_status(&resp, AppError::network)?;
-
-    resp.json::<T>()
-        .await
-        .map_err(|e| AppError::network(format!("Failed to parse response: {}", e)))
-}
-
-/// Check whether `url` is reachable (HTTP GET returns a success status).
-pub async fn check_url(client: &Client, url: &str) -> Result<()> {
-    let resp = send_get(client, url, false)
-        .await
-        .map_err(|e| AppError::network_with_url(url, e.to_string()))?;
-    ensure_success_status(&resp, |detail| AppError::network_with_url(url, detail))?;
 
     Ok(())
 }

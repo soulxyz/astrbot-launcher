@@ -5,8 +5,8 @@ use std::path::Path;
 use walkdir::WalkDir;
 
 use crate::error::{AppError, Result};
-use crate::paths::{get_instance_core_dir, get_instance_venv_dir};
-use crate::validation::validate_instance_id;
+use crate::utils::paths::{get_instance_core_dir, get_instance_venv_dir};
+use crate::utils::validation::validate_instance_id;
 
 /// Clear instance data directory.
 pub fn clear_instance_data(instance_id: &str) -> Result<()> {
