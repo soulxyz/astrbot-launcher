@@ -90,11 +90,9 @@ pub(crate) fn get_python_runtime_dir(runtime: &str) -> PathBuf {
 }
 
 fn join_segments(base: &Path, segments: &[&str]) -> PathBuf {
-    let mut out = base.to_path_buf();
-    for segment in segments {
-        out.push(segment);
-    }
-    out
+    let mut path = base.to_path_buf();
+    path.extend(segments);
+    path
 }
 
 #[cfg(target_os = "windows")]
