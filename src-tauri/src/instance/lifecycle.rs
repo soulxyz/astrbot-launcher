@@ -195,8 +195,6 @@ pub async fn start_instance(
 
     // Wait for child process in background and report early-exit signal
     let instance_id_wait = instance_id.to_string();
-    let process_manager_for_wait = Arc::clone(&process_manager);
-    let expected_pid = pid;
     let (exit_tx, mut exit_rx) = oneshot::channel::<std::result::Result<ExitStatus, String>>();
     tokio::spawn(async move {
         let wait_result = child
@@ -212,8 +210,6 @@ pub async fn start_instance(
             Err(err) => log::error!("Instance {} wait failed: {}", instance_id_wait, err),
         }
         let _ = exit_tx.send(wait_result);
-        // Only mark the PID as exited; the runtime monitor handles cleanup.
-        process_manager_for_wait.mark_pid_exited(&instance_id_wait, expected_pid);
     });
 
     // Unified startup detection via log output

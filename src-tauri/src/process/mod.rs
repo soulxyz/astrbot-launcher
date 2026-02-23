@@ -33,11 +33,10 @@ const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(60);
 /// Number of consecutive health check failures before marking as unhealthy.
 const UNHEALTHY_THRESHOLD: u32 = 3;
 
-/// On Windows, number of consecutive health check failures before treating
-/// a failed process-alive check as definitive process exit.
-/// Derived from the backoff formula: `1 << 5 = 32 >= MAX_BACKOFF (30s)`.
+/// On Windows, number of consecutive liveness probe failures before treating
+/// process-alive as definitively false.
 #[cfg(target_os = "windows")]
-const PROCESS_EXIT_THRESHOLD: u32 = 5;
+const ALIVE_EXIT_THRESHOLD: u32 = 5;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -63,12 +62,16 @@ pub struct InstanceProcess {
     pub port: u16,
     pub dashboard_enabled: bool,
     pub state: InstanceState,
-    /// Whether the original child PID has exited (reported by `child.wait()`).
-    pub(crate) pid_exited: bool,
     /// When to perform the next health check (for exponential backoff).
-    pub(crate) next_check_at: Option<std::time::Instant>,
+    pub(crate) next_health_check_at: Option<std::time::Instant>,
     /// Number of consecutive health check failures.
-    pub(crate) failure_count: u32,
+    pub(crate) health_failure_count: u32,
+    /// Number of consecutive failed liveness probes.
+    #[cfg(target_os = "windows")]
+    pub(crate) alive_failure_count: u32,
+    /// When to perform the next liveness probe (for exponential backoff).
+    #[cfg(target_os = "windows")]
+    pub(crate) next_alive_check_at: Option<std::time::Instant>,
 }
 
 #[derive(Debug, Clone)]
@@ -91,19 +94,34 @@ impl InstanceProcess {
             port,
             dashboard_enabled,
             state: InstanceState::Starting,
-            pid_exited: false,
-            next_check_at: None,
-            failure_count: 0,
+            next_health_check_at: None,
+            health_failure_count: 0,
+            #[cfg(target_os = "windows")]
+            alive_failure_count: 0,
+            #[cfg(target_os = "windows")]
+            next_alive_check_at: None,
         }
     }
 
-    pub(crate) fn calculate_backoff(&self) -> Duration {
-        let secs = 1u64 << self.failure_count.min(5); // 1, 2, 4, 8, 16, 32
+    pub(crate) fn calculate_health_backoff(&self) -> Duration {
+        let secs = 1u64 << self.health_failure_count.min(5); // 1, 2, 4, 8, 16, 32
+        Duration::from_secs(secs).min(MAX_BACKOFF)
+    }
+
+    #[cfg(target_os = "windows")]
+    pub(crate) fn calculate_alive_backoff(&self) -> Duration {
+        let secs = 1u64 << self.alive_failure_count.min(5); // 1, 2, 4, 8, 16, 32
         Duration::from_secs(secs).min(MAX_BACKOFF)
     }
 
     pub(crate) fn clear_health_failure_state(&mut self) {
-        self.next_check_at = None;
-        self.failure_count = 0;
+        self.next_health_check_at = None;
+        self.health_failure_count = 0;
+    }
+
+    #[cfg(target_os = "windows")]
+    pub(crate) fn clear_alive_failure_state(&mut self) {
+        self.next_alive_check_at = None;
+        self.alive_failure_count = 0;
     }
 }
