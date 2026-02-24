@@ -10,7 +10,7 @@ use std::time::Instant;
 use reqwest::Client;
 use tokio::sync::broadcast;
 
-use super::manager::{derive_health_state, ProcessState, Slot};
+use super::manager::{derive_health_state, InstanceEntry, ProcessState, Slot};
 use super::control::is_expected_process_alive;
 use super::health::check_health;
 use super::{InstanceState, RuntimeEvent, UNHEALTHY_THRESHOLD};
@@ -55,21 +55,6 @@ enum MonitorOutcome {
     },
 }
 
-/// Result of a single platform-specific liveness probe.
-///
-/// Distinguishes terminal death from retriable failure so that
-/// `evaluate_liveness` can act on explicit semantics rather than
-/// interpreting sentinel values from a tuple.
-enum LivenessEval {
-    /// Definitively dead — the slot should be removed.
-    DeadTerminal,
-    /// Dead but below the retry threshold (Windows only). The slot stays alive
-    /// with updated failure counters and a backoff timestamp.
-    DeadRetry { failures: u32, next_at: Instant },
-    AliveSamePid,
-    AliveNewPid(u32),
-}
-
 /// Entry point called by the monitor task on each tick.
 ///
 /// Snap-then-apply: locks briefly to snapshot, evaluates concurrently with no
@@ -88,8 +73,8 @@ pub(super) async fn poll_instances(
         state
             .slots
             .iter()
-            .filter_map(|(id, slot)| {
-                if let Slot::Live(p) = slot {
+            .filter_map(|(id, entry)| {
+                if let Some(Slot::Live(p)) = &entry.slot {
                     Some(LiveSnapshot {
                         id: id.clone(),
                         port: p.port,
@@ -199,7 +184,10 @@ fn apply_outcomes(
             MonitorOutcome::Dead { id } => {
                 // Only remove slots still in Live state — another lifecycle
                 // method may have transitioned the slot in the meantime.
-                if matches!(state.slots.get(id), Some(Slot::Live(_))) {
+                if matches!(
+                    state.slots.get(id),
+                    Some(InstanceEntry { slot: Some(Slot::Live(_)), .. })
+                ) {
                     state.slots.remove(id);
                     log::info!("Removed dead process tracking entry for instance {}", id);
                     events.push((id.clone(), InstanceState::Stopped));
@@ -213,7 +201,9 @@ fn apply_outcomes(
                 next_alive_check_at,
                 new_pid,
             } => {
-                if let Some(Slot::Live(p)) = state.slots.get_mut(id) {
+                if let Some(InstanceEntry { slot: Some(Slot::Live(p)), .. }) =
+                    state.slots.get_mut(id)
+                {
                     let old_state = derive_health_state(p);
 
                     p.health_failure_count = *health_failure_count;
@@ -298,21 +288,20 @@ async fn evaluate_health(
     }
 }
 
-/// Capped exponential backoff for health checks: `2^count` seconds, clamped to
+/// Capped exponential backoff: `2^count` seconds, clamped to
 /// [`MAX_BACKOFF`](super::MAX_BACKOFF).
-fn calculate_health_backoff(failure_count: u32) -> std::time::Duration {
+fn calculate_backoff(failure_count: u32) -> std::time::Duration {
     let secs = 1u64 << failure_count.min(5); // 1, 2, 4, 8, 16, 32
     std::time::Duration::from_secs(secs).min(super::MAX_BACKOFF)
 }
 
-/// Capped exponential backoff for liveness probes (Windows only).
-///
-/// Separate from [`calculate_health_backoff`] so the two retry mechanisms can
-/// be tuned independently.
+fn calculate_health_backoff(failure_count: u32) -> std::time::Duration {
+    calculate_backoff(failure_count)
+}
+
 #[cfg(target_os = "windows")]
 fn calculate_liveness_backoff(failure_count: u32) -> std::time::Duration {
-    let secs = 1u64 << failure_count.min(5); // 1, 2, 4, 8, 16, 32
-    std::time::Duration::from_secs(secs).min(super::MAX_BACKOFF)
+    calculate_backoff(failure_count)
 }
 
 // -- Liveness evaluation ------------------------------------------------------
@@ -320,8 +309,9 @@ fn calculate_liveness_backoff(failure_count: u32) -> std::time::Duration {
 /// Evaluate liveness for a single instance. Returns `None` if the process is
 /// dead (slot should be removed), `Some(MonitorOutcome::Alive { .. })` if alive.
 ///
-/// Platform-specific probing is delegated to [`probe_liveness`]. The backoff
-/// and retry logic for Windows liveness failures is handled there as well.
+/// Platform-specific probing is delegated to [`probe_liveness`], which returns
+/// `None` for terminal death or `Some((alive_failure_count, next_alive_check_at,
+/// new_pid))` when the process is alive or retriable.
 fn evaluate_liveness(entry: &LiveSnapshot, now: Instant) -> Option<MonitorOutcome> {
     // Backoff: not yet time to probe — preserve previous counters.
     // On non-Windows this is always a no-op (next_alive_check_at is always None).
@@ -340,48 +330,34 @@ fn evaluate_liveness(entry: &LiveSnapshot, now: Instant) -> Option<MonitorOutcom
         }
     }
 
-    match probe_liveness(entry, now) {
-        LivenessEval::DeadTerminal => None,
-        LivenessEval::DeadRetry { failures, next_at } => {
-            if !entry.dashboard_enabled {
-                // Without a dashboard there is no retry UI; treat as dead.
-                None
-            } else {
-                Some(MonitorOutcome::Alive {
-                    id: entry.id.clone(),
-                    health_failure_count: entry.health_failure_count,
-                    next_health_check_at: entry.next_health_check_at,
-                    alive_failure_count: failures,
-                    next_alive_check_at: Some(next_at),
-                    new_pid: None,
-                })
-            }
-        }
-        LivenessEval::AliveSamePid => Some(MonitorOutcome::Alive {
-            id: entry.id.clone(),
-            health_failure_count: entry.health_failure_count,
-            next_health_check_at: entry.next_health_check_at,
-            alive_failure_count: 0,
-            next_alive_check_at: None,
-            new_pid: None,
-        }),
-        LivenessEval::AliveNewPid(new_pid) => Some(MonitorOutcome::Alive {
-            id: entry.id.clone(),
-            health_failure_count: entry.health_failure_count,
-            next_health_check_at: entry.next_health_check_at,
-            alive_failure_count: 0,
-            next_alive_check_at: None,
-            new_pid: Some(new_pid),
-        }),
+    let (alive_failure_count, next_alive_check_at, new_pid) = probe_liveness(entry, now)?;
+
+    // If dashboard disabled and we are in retry mode, treat as dead.
+    if !entry.dashboard_enabled && next_alive_check_at.is_some() {
+        return None;
     }
+
+    Some(MonitorOutcome::Alive {
+        id: entry.id.clone(),
+        health_failure_count: entry.health_failure_count,
+        next_health_check_at: entry.next_health_check_at,
+        alive_failure_count,
+        next_alive_check_at,
+        new_pid,
+    })
 }
 
 // -- Platform-specific liveness probing ---------------------------------------
 
+/// Returns `None` for terminal death, or `Some((alive_failure_count,
+/// next_alive_check_at, new_pid))` when the process is alive or retriable.
 #[cfg(target_os = "windows")]
-fn probe_liveness(entry: &LiveSnapshot, now: Instant) -> LivenessEval {
+fn probe_liveness(
+    entry: &LiveSnapshot,
+    now: Instant,
+) -> Option<(u32, Option<Instant>, Option<u32>)> {
     if is_expected_process_alive(entry.pid, &entry.executable_path) {
-        return LivenessEval::AliveSamePid;
+        return Some((0, None, None));
     }
 
     // PID check failed — try port-based PID discovery.
@@ -404,7 +380,7 @@ fn probe_liveness(entry: &LiveSnapshot, now: Instant) -> LivenessEval {
             }
             // Fall through to failure handling below.
         } else if is_expected_process_alive(new_pid, &entry.executable_path) {
-            return LivenessEval::AliveNewPid(new_pid);
+            return Some((0, None, Some(new_pid)));
         } else if is_process_alive(new_pid) {
             log::warn!(
                 "Instance {} rejected PID update {} -> {}: executable path mismatch",
@@ -431,7 +407,7 @@ fn probe_liveness(entry: &LiveSnapshot, now: Instant) -> LivenessEval {
             entry.id,
             new_count
         );
-        LivenessEval::DeadTerminal
+        None
     } else {
         let backoff = calculate_liveness_backoff(new_count);
         log::debug!(
@@ -440,18 +416,18 @@ fn probe_liveness(entry: &LiveSnapshot, now: Instant) -> LivenessEval {
             new_count,
             backoff.as_secs()
         );
-        LivenessEval::DeadRetry {
-            failures: new_count,
-            next_at: now + backoff,
-        }
+        Some((new_count, Some(now + backoff), None))
     }
 }
 
 #[cfg(not(target_os = "windows"))]
-fn probe_liveness(entry: &LiveSnapshot, _now: Instant) -> LivenessEval {
+fn probe_liveness(
+    entry: &LiveSnapshot,
+    _now: Instant,
+) -> Option<(u32, Option<Instant>, Option<u32>)> {
     if is_expected_process_alive(entry.pid, &entry.executable_path) {
-        LivenessEval::AliveSamePid
+        Some((0, None, None))
     } else {
-        LivenessEval::DeadTerminal
+        None
     }
 }
