@@ -46,8 +46,11 @@ enum EvalOutcome {
 }
 
 /// Fields to write back for an alive instance (one per instance, no duplicates).
+///
+/// Carries only counters, timestamps, and optional PID updates — the derived
+/// `InstanceState` is computed from `derive_health_state` when applying outcomes,
+/// keeping a single source of truth.
 struct AliveUpdate {
-    computed_state: InstanceState,
     health_failure_count: u32,
     next_health_check_at: Option<Instant>,
     #[cfg(target_os = "windows")]
@@ -63,7 +66,6 @@ impl AliveUpdate {
     #[cfg(target_os = "windows")]
     fn from_entry_running(entry: &LiveSnapshot) -> Self {
         Self {
-            computed_state: InstanceState::Running,
             health_failure_count: entry.health_failure_count,
             next_health_check_at: entry.next_health_check_at,
             alive_failure_count: entry.alive_failure_count,
@@ -76,7 +78,6 @@ impl AliveUpdate {
     #[cfg(target_os = "windows")]
     fn from_entry_running_reset_alive(entry: &LiveSnapshot, new_pid: Option<u32>) -> Self {
         Self {
-            computed_state: InstanceState::Running,
             health_failure_count: entry.health_failure_count,
             next_health_check_at: entry.next_health_check_at,
             alive_failure_count: 0,
@@ -89,7 +90,6 @@ impl AliveUpdate {
     #[cfg(not(target_os = "windows"))]
     fn from_entry_running(entry: &LiveSnapshot) -> Self {
         Self {
-            computed_state: InstanceState::Running,
             health_failure_count: entry.health_failure_count,
             next_health_check_at: entry.next_health_check_at,
         }
@@ -209,10 +209,9 @@ async fn evaluate_health_for_update(
     now: Instant,
     http_client: &Client,
 ) -> (String, EvalOutcome) {
-    let (computed_state, health_failure_count, next_health_check_at) =
+    let (health_failure_count, next_health_check_at) =
         evaluate_health(entry, now, http_client).await;
 
-    update.computed_state = computed_state;
     update.health_failure_count = health_failure_count;
     update.next_health_check_at = next_health_check_at;
 
@@ -259,7 +258,8 @@ fn apply_outcomes(
                         }
                     }
 
-                    let new_state = update.computed_state;
+                    // Single source of truth: derive state from updated counters.
+                    let new_state = derive_health_state(p);
                     if old_state != new_state {
                         match new_state {
                             InstanceState::Unhealthy => {
@@ -283,55 +283,45 @@ fn apply_outcomes(
 
 /// Evaluate a single instance's health (async, involves HTTP).
 ///
-/// Returns `(computed_state, health_failure_count, next_health_check_at)`.
+/// Returns `(health_failure_count, next_health_check_at)`. The caller derives
+/// the `InstanceState` from the updated counters via `derive_health_state`.
 async fn evaluate_health(
     entry: &LiveSnapshot,
     now: Instant,
     http_client: &Client,
-) -> (InstanceState, u32, Option<Instant>) {
-    // Backoff: not yet time to check — use previous state.
+) -> (u32, Option<Instant>) {
+    // Backoff: not yet time to check — preserve previous counters.
     if let Some(next_at) = entry.next_health_check_at {
         if now < next_at {
-            let state = if entry.health_failure_count >= UNHEALTHY_THRESHOLD {
-                InstanceState::Unhealthy
-            } else {
-                InstanceState::Running
-            };
-            return (state, entry.health_failure_count, entry.next_health_check_at);
+            return (entry.health_failure_count, entry.next_health_check_at);
         }
     }
 
     let is_healthy = check_health(http_client, entry.port).await;
 
     if is_healthy {
-        let was_unhealthy = entry.health_failure_count >= UNHEALTHY_THRESHOLD;
-        if was_unhealthy {
+        if entry.health_failure_count >= UNHEALTHY_THRESHOLD {
             log::info!(
                 "Instance {} health restored after {} failures",
                 entry.id,
                 entry.health_failure_count
             );
         }
-        (InstanceState::Running, 0, None)
+        (0, None)
     } else {
         let new_count = entry.health_failure_count + 1;
         let backoff = calculate_health_backoff(new_count);
         let next_at = Some(now + backoff);
 
-        let state = if new_count >= UNHEALTHY_THRESHOLD {
-            if entry.health_failure_count < UNHEALTHY_THRESHOLD {
-                log::warn!(
-                    "Instance {} marked unhealthy after {} consecutive health check failures",
-                    entry.id,
-                    new_count
-                );
-            }
-            InstanceState::Unhealthy
-        } else {
-            InstanceState::Running
-        };
+        if new_count >= UNHEALTHY_THRESHOLD && entry.health_failure_count < UNHEALTHY_THRESHOLD {
+            log::warn!(
+                "Instance {} marked unhealthy after {} consecutive health check failures",
+                entry.id,
+                new_count
+            );
+        }
 
-        (state, new_count, next_at)
+        (new_count, next_at)
     }
 }
 
