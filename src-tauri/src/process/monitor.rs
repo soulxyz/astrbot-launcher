@@ -37,15 +37,10 @@ struct LiveSnapshot {
     next_alive_check_at: Option<Instant>,
 }
 
-/// Outcome of evaluating a single instance's liveness and health.
-enum EvalOutcome {
-    /// Process is dead — slot should be removed.
-    Dead,
-    /// Process is alive — update its fields.
-    Alive(AliveUpdate),
-}
-
 /// Fields to write back for an alive instance (one per instance, no duplicates).
+///
+/// Evaluation results use `Option<AliveUpdate>`: `None` means the process is
+/// dead (slot should be removed), `Some` means it is alive (update its fields).
 ///
 /// Carries only counters, timestamps, and optional PID updates — the derived
 /// `InstanceState` is computed from `derive_health_state` when applying outcomes,
@@ -170,20 +165,20 @@ pub(super) async fn poll_instances(
 async fn evaluate_instances(
     entries: &[LiveSnapshot],
     http_client: &Client,
-) -> Vec<(String, EvalOutcome)> {
+) -> Vec<(String, Option<AliveUpdate>)> {
     let now = Instant::now();
-    let mut outcomes: Vec<(String, EvalOutcome)> = Vec::new();
+    let mut outcomes: Vec<(String, Option<AliveUpdate>)> = Vec::new();
     let mut needs_health_check: Vec<(&LiveSnapshot, AliveUpdate)> = Vec::new();
 
     for entry in entries {
         let Some(update) = evaluate_liveness(entry, now) else {
-            outcomes.push((entry.id.clone(), EvalOutcome::Dead));
+            outcomes.push((entry.id.clone(), None));
             continue;
         };
 
         if !entry.dashboard_enabled {
             // Alive, no dashboard → use liveness defaults directly.
-            outcomes.push((entry.id.clone(), EvalOutcome::Alive(update)));
+            outcomes.push((entry.id.clone(), Some(update)));
             continue;
         }
 
@@ -208,26 +203,26 @@ async fn evaluate_health_for_update(
     mut update: AliveUpdate,
     now: Instant,
     http_client: &Client,
-) -> (String, EvalOutcome) {
+) -> (String, Option<AliveUpdate>) {
     let (health_failure_count, next_health_check_at) =
         evaluate_health(entry, now, http_client).await;
 
     update.health_failure_count = health_failure_count;
     update.next_health_check_at = next_health_check_at;
 
-    (entry.id.clone(), EvalOutcome::Alive(update))
+    (entry.id.clone(), Some(update))
 }
 
 /// Apply monitor outcomes to the live process state. Returns events to emit.
 fn apply_outcomes(
     state: &mut ProcessState,
-    outcomes: &[(String, EvalOutcome)],
+    outcomes: &[(String, Option<AliveUpdate>)],
 ) -> Vec<(String, InstanceState)> {
     let mut events = Vec::new();
 
-    for (id, outcome) in outcomes {
-        match outcome {
-            EvalOutcome::Dead => {
+    for (id, update) in outcomes {
+        match update {
+            None => {
                 // Only remove slots still in Live state — another lifecycle
                 // method may have transitioned the slot in the meantime.
                 if matches!(state.slots.get(id), Some(Slot::Live(_))) {
@@ -236,7 +231,7 @@ fn apply_outcomes(
                     events.push((id.clone(), InstanceState::Stopped));
                 }
             }
-            EvalOutcome::Alive(update) => {
+            Some(update) => {
                 if let Some(Slot::Live(p)) = state.slots.get_mut(id) {
                     let old_state = derive_health_state(p);
 

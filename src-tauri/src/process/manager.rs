@@ -15,7 +15,7 @@ use super::control::graceful_shutdown;
 use super::monitor;
 use super::{InstanceProcess, InstanceRuntimeInfo, InstanceState, RuntimeEvent};
 use super::UNHEALTHY_THRESHOLD;
-use crate::error::{AppError, Result};
+use crate::error::{AppError, ErrorKind, Result};
 use crate::instance::lifecycle;
 use crate::utils::sync::lock_mutex_recover;
 
@@ -53,23 +53,6 @@ struct ShutdownTarget {
     executable_path: PathBuf,
 }
 
-/// Result of attempting to transition a slot to `Stopping`.
-///
-/// Each variant maps to a distinct lifecycle state; callers match exhaustively
-/// to produce the appropriate error or proceed with IO.
-enum StopTransition {
-    /// Successfully transitioned `Live` → `Stopping`.
-    Started { pid: u32, exe: PathBuf },
-    /// Slot was already `Stopping`.
-    AlreadyStopping,
-    /// Slot is `Starting` (launch in progress).
-    StillStarting,
-    /// Slot is `Guarded` (CRUD operation in progress).
-    Guarded,
-    /// No slot exists for this instance.
-    NotRunning,
-}
-
 impl ProcessState {
     /// Reject if the application is shutting down.
     fn check_active(&self) -> Result<()> {
@@ -92,11 +75,10 @@ impl ProcessState {
         }
     }
 
-    /// Attempt to transition a `Live` slot to `Stopping`.
+    /// Transition a `Live` slot to `Stopping`, returning the pid and exe path.
     ///
-    /// Returns a [`StopTransition`] describing the outcome. Only the `Started`
-    /// variant means the slot was actually modified.
-    fn transition_to_stopping(&mut self, id: &str) -> StopTransition {
+    /// Returns an appropriate error for every non-`Live` state.
+    fn prepare_stop(&mut self, id: &str) -> Result<(u32, PathBuf)> {
         match self.slots.get(id) {
             Some(Slot::Live(p)) => {
                 let pid = p.pid;
@@ -112,12 +94,12 @@ impl ProcessState {
                         dashboard_enabled,
                     },
                 );
-                StopTransition::Started { pid, exe }
+                Ok((pid, exe))
             }
-            Some(Slot::Stopping { .. }) => StopTransition::AlreadyStopping,
-            Some(Slot::Starting) => StopTransition::StillStarting,
-            Some(Slot::Guarded) => StopTransition::Guarded,
-            None => StopTransition::NotRunning,
+            Some(Slot::Stopping { .. }) => Err(AppError::process("Instance is already stopping")),
+            Some(Slot::Starting) => Err(AppError::process("Instance is still starting")),
+            Some(Slot::Guarded) => Err(AppError::process("Another operation is in progress")),
+            None => Err(AppError::instance_not_running()),
         }
     }
 
@@ -231,22 +213,31 @@ impl ProcessManager {
         let monitor_state = Arc::clone(&self.state);
         let monitor_events = self.runtime_events.clone();
         tauri::async_runtime::spawn(async move {
-            let http_client = match Client::builder()
-                .timeout(Duration::from_secs(3))
-                .no_proxy()
-                .build()
-            {
-                Ok(client) => client,
-                Err(e) => {
-                    log::error!("Failed to create monitor HTTP client: {e}; monitor will not run");
-                    return;
-                }
-            };
-
             let mut interval = tokio::time::interval(super::MONITOR_INTERVAL);
+            let mut http_client: Option<Client> = None;
+
             loop {
                 interval.tick().await;
-                monitor::poll_instances(&monitor_state, &http_client, &monitor_events).await;
+
+                if http_client.is_none() {
+                    match Client::builder()
+                        .timeout(Duration::from_secs(3))
+                        .no_proxy()
+                        .build()
+                    {
+                        Ok(client) => http_client = Some(client),
+                        Err(e) => {
+                            log::error!(
+                                "Failed to create monitor HTTP client: {e}; retrying next tick"
+                            );
+                            continue;
+                        }
+                    }
+                }
+
+                if let Some(client) = http_client.as_ref() {
+                    monitor::poll_instances(&monitor_state, client, &monitor_events).await;
+                }
             }
         });
     }
@@ -347,21 +338,7 @@ impl ProcessManager {
         let (pid, exe) = {
             let mut state = lock_mutex_recover(&self.state, "ProcessState");
             state.check_active()?;
-            match state.transition_to_stopping(id) {
-                StopTransition::Started { pid, exe } => (pid, exe),
-                StopTransition::AlreadyStopping => {
-                    return Err(AppError::process("Instance is already stopping"));
-                }
-                StopTransition::StillStarting => {
-                    return Err(AppError::process("Instance is still starting"));
-                }
-                StopTransition::Guarded => {
-                    return Err(AppError::process("Another operation is in progress"));
-                }
-                StopTransition::NotRunning => {
-                    return Err(AppError::instance_not_running());
-                }
-            }
+            state.prepare_stop(id)?
         };
         self.emit(id, InstanceState::Stopping);
 
@@ -381,20 +358,14 @@ impl ProcessManager {
         let stop_info = {
             let mut state = lock_mutex_recover(&self.state, "ProcessState");
             state.check_active()?;
-            match state.transition_to_stopping(id) {
-                StopTransition::Started { pid, exe } => Some((pid, exe)),
-                StopTransition::StillStarting => return Err(AppError::instance_running()),
-                StopTransition::Guarded => {
-                    return Err(AppError::process("Another operation is in progress"));
-                }
-                StopTransition::AlreadyStopping => {
-                    return Err(AppError::process("Instance is already stopping"));
-                }
-                StopTransition::NotRunning => {
+            match state.prepare_stop(id) {
+                Ok((pid, exe)) => Some((pid, exe)),
+                Err(e) if e.kind() == ErrorKind::InstanceNotRunning => {
                     // Not running — go straight to Starting.
                     state.slots.insert(id.to_string(), Slot::Starting);
                     None
                 }
+                Err(e) => return Err(e),
             }
         };
 
@@ -541,9 +512,6 @@ impl Default for ProcessManager {
 
 /// RAII guard that prevents lifecycle operations on an instance.
 /// Released automatically when dropped.
-///
-/// Uses `try_lock` in its `Drop` implementation to avoid deadlocking if
-/// the mutex is already held on the same thread (e.g. during a panic unwind).
 pub struct InstanceGuard {
     instance_id: String,
     state: Arc<Mutex<ProcessState>>,
@@ -551,20 +519,8 @@ pub struct InstanceGuard {
 
 impl Drop for InstanceGuard {
     fn drop(&mut self) {
-        match self.state.try_lock() {
-            Ok(mut state) => {
-                state.slots.remove(&self.instance_id);
-            }
-            Err(std::sync::TryLockError::WouldBlock) => {
-                log::warn!(
-                    "InstanceGuard for '{}': mutex already held during drop, \
-                     slot may be orphaned",
-                    self.instance_id
-                );
-            }
-            Err(std::sync::TryLockError::Poisoned(e)) => {
-                e.into_inner().slots.remove(&self.instance_id);
-            }
-        }
+        lock_mutex_recover(&self.state, "ProcessState")
+            .slots
+            .remove(&self.instance_id);
     }
 }
