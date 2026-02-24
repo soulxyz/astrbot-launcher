@@ -56,41 +56,6 @@ struct AliveUpdate {
     new_pid: Option<u32>,
 }
 
-impl AliveUpdate {
-    /// Preserve the snapshot's health and liveness state as-is.
-    #[cfg(target_os = "windows")]
-    fn from_entry_running(entry: &LiveSnapshot) -> Self {
-        Self {
-            health_failure_count: entry.health_failure_count,
-            next_health_check_at: entry.next_health_check_at,
-            alive_failure_count: entry.alive_failure_count,
-            next_alive_check_at: entry.next_alive_check_at,
-            new_pid: None,
-        }
-    }
-
-    /// Preserve health state but reset alive tracking (liveness confirmed).
-    #[cfg(target_os = "windows")]
-    fn from_entry_running_reset_alive(entry: &LiveSnapshot, new_pid: Option<u32>) -> Self {
-        Self {
-            health_failure_count: entry.health_failure_count,
-            next_health_check_at: entry.next_health_check_at,
-            alive_failure_count: 0,
-            next_alive_check_at: None,
-            new_pid,
-        }
-    }
-
-    /// Preserve health state (non-Windows: no alive tracking fields).
-    #[cfg(not(target_os = "windows"))]
-    fn from_entry_running(entry: &LiveSnapshot) -> Self {
-        Self {
-            health_failure_count: entry.health_failure_count,
-            next_health_check_at: entry.next_health_check_at,
-        }
-    }
-}
-
 #[cfg(target_os = "windows")]
 enum LivenessProbeResult {
     Alive,
@@ -186,31 +151,24 @@ async fn evaluate_instances(
         needs_health_check.push((entry, update));
     }
 
-    // Concurrent health checks
+    // Concurrent health checks (inlined — no separate helper function)
     let health_futures: Vec<_> = needs_health_check
         .into_iter()
-        .map(|(entry, update)| evaluate_health_for_update(entry, update, now, http_client))
+        .map(|(entry, mut update)| {
+            let http_client = http_client.clone();
+            async move {
+                let (health_failure_count, next_health_check_at) =
+                    evaluate_health(entry, now, &http_client).await;
+                update.health_failure_count = health_failure_count;
+                update.next_health_check_at = next_health_check_at;
+                (entry.id.clone(), Some(update))
+            }
+        })
         .collect();
     let health_results = futures_util::future::join_all(health_futures).await;
 
     outcomes.extend(health_results);
     outcomes
-}
-
-/// Evaluate health and overwrite health fields in the liveness update.
-async fn evaluate_health_for_update(
-    entry: &LiveSnapshot,
-    mut update: AliveUpdate,
-    now: Instant,
-    http_client: &Client,
-) -> (String, Option<AliveUpdate>) {
-    let (health_failure_count, next_health_check_at) =
-        evaluate_health(entry, now, http_client).await;
-
-    update.health_failure_count = health_failure_count;
-    update.next_health_check_at = next_health_check_at;
-
-    (entry.id.clone(), Some(update))
 }
 
 /// Apply monitor outcomes to the live process state. Returns events to emit.
@@ -334,18 +292,32 @@ fn evaluate_liveness(entry: &LiveSnapshot, now: Instant) -> Option<AliveUpdate> 
     if entry.dashboard_enabled {
         if let Some(next_at) = entry.next_alive_check_at {
             if now < next_at {
-                return Some(AliveUpdate::from_entry_running(entry));
+                return Some(AliveUpdate {
+                    health_failure_count: entry.health_failure_count,
+                    next_health_check_at: entry.next_health_check_at,
+                    alive_failure_count: entry.alive_failure_count,
+                    next_alive_check_at: entry.next_alive_check_at,
+                    new_pid: None,
+                });
             }
         }
     }
 
     match probe_liveness(entry) {
-        LivenessProbeResult::Alive => {
-            Some(AliveUpdate::from_entry_running_reset_alive(entry, None))
-        }
-        LivenessProbeResult::AliveWithNewPid(new_pid) => {
-            Some(AliveUpdate::from_entry_running_reset_alive(entry, Some(new_pid)))
-        }
+        LivenessProbeResult::Alive => Some(AliveUpdate {
+            health_failure_count: entry.health_failure_count,
+            next_health_check_at: entry.next_health_check_at,
+            alive_failure_count: 0,
+            next_alive_check_at: None,
+            new_pid: None,
+        }),
+        LivenessProbeResult::AliveWithNewPid(new_pid) => Some(AliveUpdate {
+            health_failure_count: entry.health_failure_count,
+            next_health_check_at: entry.next_health_check_at,
+            alive_failure_count: 0,
+            next_alive_check_at: None,
+            new_pid: Some(new_pid),
+        }),
         LivenessProbeResult::Dead => {
             if !entry.dashboard_enabled {
                 None
@@ -376,9 +348,11 @@ fn handle_liveness_failure(entry: &LiveSnapshot, now: Instant) -> Option<AliveUp
             backoff.as_secs()
         );
         Some(AliveUpdate {
+            health_failure_count: entry.health_failure_count,
+            next_health_check_at: entry.next_health_check_at,
             alive_failure_count: new_count,
             next_alive_check_at: Some(now + backoff),
-            ..AliveUpdate::from_entry_running_reset_alive(entry, None)
+            new_pid: None,
         })
     }
 }
@@ -435,6 +409,8 @@ fn probe_liveness(entry: &LiveSnapshot) -> LivenessProbeResult {
 
 #[cfg(not(target_os = "windows"))]
 fn evaluate_liveness(entry: &LiveSnapshot, _now: Instant) -> Option<AliveUpdate> {
-    is_expected_process_alive(entry.pid, &entry.executable_path)
-        .then(|| AliveUpdate::from_entry_running(entry))
+    is_expected_process_alive(entry.pid, &entry.executable_path).then(|| AliveUpdate {
+        health_failure_count: entry.health_failure_count,
+        next_health_check_at: entry.next_health_check_at,
+    })
 }
