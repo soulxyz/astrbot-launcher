@@ -93,12 +93,9 @@ fn find_listener_v4(port: u16) -> Option<u32> {
         // dwLocalPort is network byte order; mask to lower 16 bits then convert.
         let local_port = u16::from_be((row.dwLocalPort & 0xFFFF) as u16);
 
-        if local_port == port {
-            if row.dwOwningPid != 0 {
-                return Some(row.dwOwningPid);
-            }
-            // PID 0 is System Idle Process; never treat it as a valid listener owner.
-            continue;
+        // PID 0 is System Idle Process; never treat it as a valid listener owner.
+        if local_port == port && row.dwOwningPid != 0 {
+            return Some(row.dwOwningPid);
         }
     }
     None
@@ -128,12 +125,9 @@ fn find_listener_v6(port: u16) -> Option<u32> {
 
         let local_port = u16::from_be((row.dwLocalPort & 0xFFFF) as u16);
 
-        if local_port == port {
-            if row.dwOwningPid != 0 {
-                return Some(row.dwOwningPid);
-            }
-            // PID 0 is System Idle Process; never treat it as a valid listener owner.
-            continue;
+        // PID 0 is System Idle Process; never treat it as a valid listener owner.
+        if local_port == port && row.dwOwningPid != 0 {
+            return Some(row.dwOwningPid);
         }
     }
     None

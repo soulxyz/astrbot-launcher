@@ -1,175 +1,537 @@
-//! Instance process tracking and state management.
+//! Process manager — `Mutex<ProcessState>` approach.
+//!
+//! Sync methods for queries (direct lock → read → unlock).
+//! Async methods for lifecycle operations that involve IO.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::RwLock;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use reqwest::Client;
 use tokio::sync::broadcast;
 
-use crate::utils::sync::{read_lock_recover, write_lock_recover};
-
 use super::control::graceful_shutdown;
-use super::{
-    InstanceProcess, InstanceRuntimeSnapshot, InstanceState, RuntimeEvent,
-};
+use super::monitor;
+use super::{InstanceProcess, InstanceRuntimeInfo, InstanceState, RuntimeEvent};
+use super::UNHEALTHY_THRESHOLD;
+use crate::error::{AppError, Result};
+use crate::instance::lifecycle;
+use crate::utils::sync::lock_mutex_recover;
 
-/// Manages running instance processes.
+/// A single slot in the process state machine.
+///
+/// Each instance occupies at most one slot. The variant encodes the lifecycle
+/// phase, eliminating the need for separate collections.
+pub(super) enum Slot {
+    /// CRUD protection active (guard held).
+    Guarded,
+    /// Launch IO in progress.
+    Starting,
+    /// Process running (healthy or unhealthy, derived from `InstanceProcess`).
+    Live(InstanceProcess),
+    /// Shutdown IO in progress. Retains pid/exe so the exit handler can
+    /// force-kill processes that are still shutting down.
+    Stopping {
+        pid: u32,
+        executable_path: PathBuf,
+        port: u16,
+        dashboard_enabled: bool,
+    },
+}
+
+pub(super) struct ProcessState {
+    pub(super) slots: HashMap<String, Slot>,
+    pub(super) shutting_down: bool,
+}
+
+/// Derive the health state from an `InstanceProcess` without storing it.
+pub(super) fn derive_health_state(p: &InstanceProcess) -> InstanceState {
+    if p.health_failure_count >= UNHEALTHY_THRESHOLD {
+        InstanceState::Unhealthy
+    } else {
+        InstanceState::Running
+    }
+}
+
+/// Manages running instance processes via a shared mutex-guarded state.
 pub struct ProcessManager {
-    pub(super) processes: RwLock<HashMap<String, InstanceProcess>>,
-    pub(super) http_client: Client,
-    pub(super) runtime_events: broadcast::Sender<RuntimeEvent>,
+    state: Arc<Mutex<ProcessState>>,
+    runtime_events: broadcast::Sender<RuntimeEvent>,
+}
+
+impl Clone for ProcessManager {
+    fn clone(&self) -> Self {
+        Self {
+            state: Arc::clone(&self.state),
+            runtime_events: self.runtime_events.clone(),
+        }
+    }
 }
 
 impl ProcessManager {
-    #[allow(clippy::expect_used)]
     pub fn new() -> Self {
-        let http_client = Client::builder()
-            .timeout(Duration::from_secs(3))
-            .no_proxy()
-            .build()
-            .expect("Failed to create HTTP client");
-
         let (runtime_events, _) = broadcast::channel(128);
+        let state = Arc::new(Mutex::new(ProcessState {
+            slots: HashMap::new(),
+            shutting_down: false,
+        }));
 
         Self {
-            processes: RwLock::new(HashMap::new()),
-            http_client,
+            state,
             runtime_events,
         }
+    }
+
+    /// Spawn the background monitor task that periodically polls all instances.
+    ///
+    /// Must be called after the Tauri async runtime is available (e.g. in `setup`).
+    pub fn start_monitor(&self) {
+        let monitor_state = Arc::clone(&self.state);
+        let monitor_events = self.runtime_events.clone();
+        tauri::async_runtime::spawn(async move {
+            let http_client = match Client::builder()
+                .timeout(Duration::from_secs(3))
+                .no_proxy()
+                .build()
+            {
+                Ok(client) => client,
+                Err(e) => {
+                    log::error!("Failed to create monitor HTTP client: {e}; monitor will not run");
+                    return;
+                }
+            };
+
+            let mut interval = tokio::time::interval(super::MONITOR_INTERVAL);
+            loop {
+                interval.tick().await;
+                monitor::poll_instances(&monitor_state, &http_client, &monitor_events).await;
+            }
+        });
     }
 
     pub fn subscribe_runtime_events(&self) -> broadcast::Receiver<RuntimeEvent> {
         self.runtime_events.subscribe()
     }
 
-    pub(super) fn emit_runtime_event(&self, instance_id: &str, state: InstanceState) {
-        let _ = self.runtime_events.send(RuntimeEvent {
-            instance_id: instance_id.to_string(),
-            state,
-        });
-    }
+    // -- Sync methods (direct lock → read/write → unlock) ---------------------
 
-    /// Check if an instance is tracked (i.e. not stopped).
-    pub fn is_tracked(&self, instance_id: &str) -> bool {
-        let procs = read_lock_recover(&self.processes, "ProcessManager.processes");
-        procs.contains_key(instance_id)
-    }
-
-    /// Set the process info for an instance.
-    pub fn set_process(
-        &self,
-        instance_id: &str,
-        pid: u32,
-        executable_path: PathBuf,
-        port: u16,
-        dashboard_enabled: bool,
-    ) {
-        let mut procs = write_lock_recover(&self.processes, "ProcessManager.processes");
-        procs.insert(
-            instance_id.to_string(),
-            InstanceProcess::new(pid, executable_path, port, dashboard_enabled),
-        );
-        drop(procs);
-        self.emit_runtime_event(instance_id, InstanceState::Starting);
-    }
-
-    /// Get the port for an instance.
-    pub fn get_port(&self, instance_id: &str) -> Option<u16> {
-        let procs = read_lock_recover(&self.processes, "ProcessManager.processes");
-        procs.get(instance_id).map(|info| info.port)
-    }
-
-    /// Remove an instance from tracking and return its process info.
-    pub fn remove(&self, instance_id: &str) -> Option<InstanceProcess> {
-        let mut procs = write_lock_recover(&self.processes, "ProcessManager.processes");
-        let removed = procs.remove(instance_id);
-        drop(procs);
-        if removed.is_some() {
-            self.emit_runtime_event(instance_id, InstanceState::Stopped);
-        }
-        removed
-    }
-
-    /// Transition an instance to Stopping state, returning process info for shutdown.
-    /// Returns None if the instance is not tracked.
-    pub fn begin_stop(&self, instance_id: &str) -> Option<(u32, PathBuf)> {
-        let mut procs = write_lock_recover(&self.processes, "ProcessManager.processes");
-        if let Some(info) = procs.get_mut(instance_id) {
-            info.state = InstanceState::Stopping;
-            let result = (info.pid, info.executable_path.clone());
-            drop(procs);
-            self.emit_runtime_event(instance_id, InstanceState::Stopping);
-            Some(result)
-        } else {
-            None
+    pub fn get_port(&self, id: &str) -> Option<u16> {
+        let state = lock_mutex_recover(&self.state, "ProcessState");
+        match state.slots.get(id) {
+            Some(Slot::Live(p)) => Some(p.port),
+            _ => None,
         }
     }
 
-    /// Update the state of a tracked instance.
-    pub fn set_state(&self, instance_id: &str, state: InstanceState) {
-        let mut procs = write_lock_recover(&self.processes, "ProcessManager.processes");
-        if let Some(info) = procs.get_mut(instance_id) {
-            info.state = state;
-        }
-    }
-
-    /// Get a lightweight runtime snapshot for all tracked instances.
-    ///
-    /// This is a pure read — it returns the last state computed by the
-    /// background monitor without triggering a new evaluation cycle.
-    pub fn get_runtime_snapshot(&self) -> HashMap<String, InstanceRuntimeSnapshot> {
-        let procs = read_lock_recover(&self.processes, "ProcessManager.processes");
-        procs
+    pub fn get_runtime_info(&self) -> HashMap<String, InstanceRuntimeInfo> {
+        let state = lock_mutex_recover(&self.state, "ProcessState");
+        state
+            .slots
             .iter()
-            .map(|(id, info)| {
-                (
-                    id.clone(),
-                    InstanceRuntimeSnapshot {
-                        state: info.state,
-                        port: info.port,
-                        dashboard_enabled: info.dashboard_enabled,
+            .filter_map(|(id, slot)| {
+                let info = match slot {
+                    Slot::Starting => InstanceRuntimeInfo::Starting,
+                    Slot::Live(p) => InstanceRuntimeInfo::Live {
+                        state: derive_health_state(p),
+                        port: p.port,
+                        dashboard_enabled: p.dashboard_enabled,
                     },
-                )
+                    Slot::Stopping {
+                        port,
+                        dashboard_enabled,
+                        ..
+                    } => InstanceRuntimeInfo::Stopping {
+                        port: *port,
+                        dashboard_enabled: *dashboard_enabled,
+                    },
+                    // Guard is a CRUD lock, not a user-visible state.
+                    Slot::Guarded => return None,
+                };
+                Some((id.clone(), info))
             })
             .collect()
     }
 
-    /// Get the IDs of all currently tracked instances.
-    ///
-    /// This returns entries in the process manager map only.
-    /// It does not perform runtime status checks.
     pub fn get_tracked_ids(&self) -> Vec<String> {
-        let procs = read_lock_recover(&self.processes, "ProcessManager.processes");
-        procs.keys().cloned().collect()
+        let state = lock_mutex_recover(&self.state, "ProcessState");
+        state
+            .slots
+            .iter()
+            .filter_map(|(id, slot)| match slot {
+                Slot::Live(_) => Some(id.clone()),
+                _ => None,
+            })
+            .collect()
     }
 
-    /// Stop all running instances with graceful shutdown.
-    pub fn stop_all(&self) {
-        let mut procs = write_lock_recover(&self.processes, "ProcessManager.processes");
-        let entries: Vec<(String, InstanceProcess)> = procs.drain().collect();
-        drop(procs);
+    /// Acquire a guard that prevents lifecycle operations on the instance.
+    /// The guard is released when dropped.
+    pub fn acquire_guard(&self, id: &str) -> Result<InstanceGuard> {
+        let mut state = lock_mutex_recover(&self.state, "ProcessState");
+        if state.shutting_down {
+            return Err(AppError::process("Application shutting down"));
+        }
+        match state.slots.get(id) {
+            Some(Slot::Guarded) => {
+                return Err(AppError::process("Another operation is in progress"));
+            }
+            Some(_) => return Err(AppError::instance_running()),
+            None => {}
+        }
+        state.slots.insert(id.to_string(), Slot::Guarded);
+        drop(state);
+        Ok(InstanceGuard {
+            instance_id: id.to_string(),
+            state: Arc::clone(&self.state),
+        })
+    }
 
-        for (id, info) in &entries {
-            log::info!(
-                "Stopping instance {} (pid: {}, port: {})",
-                id,
-                info.pid,
-                info.port
-            );
+    // -- Async methods (involve IO) -------------------------------------------
+
+    pub async fn start_instance(&self, id: &str, app_handle: tauri::AppHandle) -> Result<u16> {
+        // Phase 1: lock → check → set Starting → unlock
+        {
+            let mut state = lock_mutex_recover(&self.state, "ProcessState");
+            if state.shutting_down {
+                return Err(AppError::process("Application shutting down"));
+            }
+            match state.slots.get(id) {
+                Some(Slot::Guarded) => {
+                    return Err(AppError::process("Another operation is in progress"));
+                }
+                Some(_) => return Err(AppError::instance_running()),
+                None => {}
+            }
+            state.slots.insert(id.to_string(), Slot::Starting);
+        }
+        self.emit(id, InstanceState::Starting);
+
+        // Phase 2+3: launch IO and finalize slot
+        self.launch_and_finalize(id, &app_handle).await
+    }
+
+    pub async fn stop_instance(&self, id: &str) -> Result<()> {
+        // Phase 1: lock → validate → replace with Stopping → extract info → unlock
+        let (pid, exe) = {
+            let mut state = lock_mutex_recover(&self.state, "ProcessState");
+            if state.shutting_down {
+                return Err(AppError::process("Application shutting down"));
+            }
+            let (pid, exe) = match state.slots.get(id) {
+                Some(Slot::Live(p)) => {
+                    let pid = p.pid;
+                    let exe = p.executable_path.clone();
+                    let port = p.port;
+                    let dashboard_enabled = p.dashboard_enabled;
+                    state.slots.insert(
+                        id.to_string(),
+                        Slot::Stopping {
+                            pid,
+                            executable_path: exe.clone(),
+                            port,
+                            dashboard_enabled,
+                        },
+                    );
+                    (pid, exe)
+                }
+                Some(Slot::Stopping { .. }) => {
+                    return Err(AppError::process("Instance is already stopping"));
+                }
+                Some(Slot::Starting) => {
+                    return Err(AppError::process("Instance is still starting"));
+                }
+                Some(Slot::Guarded) => {
+                    return Err(AppError::process("Another operation is in progress"));
+                }
+                None => return Err(AppError::instance_not_running()),
+            };
+            drop(state);
+            (pid, exe)
+        };
+        self.emit(id, InstanceState::Stopping);
+
+        // Phase 2: shutdown IO (no lock held)
+        if let Err(e) = lifecycle::shutdown_instance(pid, exe).await {
+            self.revert_stopping_to_live(id);
+            return Err(e);
         }
 
-        let targets: Vec<(u32, &std::path::Path)> = entries
+        // Phase 3: finalize — remove slot and emit Stopped.
+        self.finalize_stop(id);
+        Ok(())
+    }
+
+    pub async fn restart_instance(&self, id: &str, app_handle: tauri::AppHandle) -> Result<u16> {
+        // Phase 1: lock → check → prepare stop if running, or insert Starting directly
+        let stop_info = {
+            let mut state = lock_mutex_recover(&self.state, "ProcessState");
+            if state.shutting_down {
+                return Err(AppError::process("Application shutting down"));
+            }
+            match state.slots.get(id) {
+                Some(Slot::Starting) => {
+                    return Err(AppError::instance_running());
+                }
+                Some(Slot::Guarded) => {
+                    return Err(AppError::process("Another operation is in progress"));
+                }
+                Some(Slot::Stopping { .. }) => {
+                    return Err(AppError::process("Instance is already stopping"));
+                }
+                Some(Slot::Live(p)) => {
+                    let pid = p.pid;
+                    let exe = p.executable_path.clone();
+                    let port = p.port;
+                    let dash = p.dashboard_enabled;
+                    state.slots.insert(
+                        id.to_string(),
+                        Slot::Stopping {
+                            pid,
+                            executable_path: exe.clone(),
+                            port,
+                            dashboard_enabled: dash,
+                        },
+                    );
+                    Some((pid, exe))
+                }
+                None => {
+                    // Not running — go straight to Starting.
+                    state.slots.insert(id.to_string(), Slot::Starting);
+                    None
+                }
+            }
+        };
+
+        // Phase 2: stop if was running, then atomically transition Stopping → Starting
+        if let Some((pid, exe)) = stop_info {
+            self.emit(id, InstanceState::Stopping);
+            if let Err(e) = lifecycle::shutdown_instance(pid, exe).await {
+                log::error!("Instance {} shutdown failed during restart: {}", id, e);
+                self.revert_stopping_to_live(id);
+                return Err(e);
+            }
+            // Atomically transition Stopping → Starting (no unprotected gap).
+            {
+                let mut state = lock_mutex_recover(&self.state, "ProcessState");
+                if state.shutting_down {
+                    state.slots.remove(id);
+                    drop(state);
+                    self.emit(id, InstanceState::Stopped);
+                    return Err(AppError::process("Application shutting down"));
+                }
+                state.slots.insert(id.to_string(), Slot::Starting);
+            }
+        }
+
+        // Skip emitting Stopped to avoid UI flicker — go directly to Starting.
+        self.emit(id, InstanceState::Starting);
+
+        // Phase 3: launch IO and finalize slot
+        self.launch_and_finalize(id, &app_handle).await
+    }
+
+    /// Run launch IO and finalize the slot.
+    ///
+    /// Precondition: the caller has already inserted `Slot::Starting` for `id`.
+    async fn launch_and_finalize(&self, id: &str, app_handle: &tauri::AppHandle) -> Result<u16> {
+        let mut slot_guard = StartingSlotGuard {
+            instance_id: id.to_string(),
+            state: Arc::clone(&self.state),
+            defused: false,
+        };
+
+        let result = lifecycle::launch_instance(id, app_handle).await;
+
+        let mut state = lock_mutex_recover(&self.state, "ProcessState");
+
+        // If shutting down, kill any late-arriving process to prevent orphans.
+        if state.shutting_down {
+            state.slots.remove(id);
+            slot_guard.defused = true;
+            drop(state);
+            if let Ok(launch) = result {
+                log::info!(
+                    "Killing late-started instance {} (pid: {}) due to shutdown",
+                    id,
+                    launch.pid
+                );
+                let pid = launch.pid;
+                let exe = launch.executable_path;
+                let late_id = id.to_string();
+                tokio::spawn(async move {
+                    if let Err(e) = lifecycle::shutdown_instance(pid, exe).await {
+                        log::warn!("Failed to kill late-started instance {}: {}", late_id, e);
+                    }
+                });
+            }
+            return Err(AppError::process("Application shutting down"));
+        }
+
+        match result {
+            Ok(launch) => {
+                let port = launch.port;
+                state.slots.insert(
+                    id.to_string(),
+                    Slot::Live(InstanceProcess::new(
+                        launch.pid,
+                        launch.executable_path,
+                        launch.port,
+                        launch.dashboard_enabled,
+                    )),
+                );
+                slot_guard.defused = true;
+                drop(state);
+                self.emit(id, InstanceState::Running);
+                Ok(port)
+            }
+            Err(e) => {
+                state.slots.remove(id);
+                slot_guard.defused = true;
+                drop(state);
+                self.emit(id, InstanceState::Stopped);
+                Err(e)
+            }
+        }
+    }
+
+    /// Blocking shutdown for the exit handler.
+    ///
+    /// Called from the Tauri `RunEvent::Exit` handler (not inside async context).
+    /// Drains ALL slots and force-kills every instance that has a known PID.
+    pub fn stop_all_blocking(&self) {
+        let mut state = lock_mutex_recover(&self.state, "ProcessState");
+        state.shutting_down = true;
+
+        // Drain ALL slots. Collect pid/exe from Live and Stopping for shutdown.
+        // Starting slots have no PID; those async tasks will see `shutting_down`
+        // when they next lock and `launch_and_finalize` will handle cleanup.
+        let all_slots: Vec<(String, Slot)> = state.slots.drain().collect();
+        drop(state);
+
+        let mut targets: Vec<(String, u32, u16, PathBuf)> = Vec::new();
+
+        for (id, slot) in all_slots {
+            match slot {
+                Slot::Live(p) => {
+                    targets.push((id, p.pid, p.port, p.executable_path));
+                }
+                Slot::Stopping {
+                    pid,
+                    executable_path,
+                    port,
+                    ..
+                } => {
+                    targets.push((id, pid, port, executable_path));
+                }
+                Slot::Starting => {
+                    log::info!(
+                        "Cleared Starting slot for instance {} during shutdown \
+                         (async task will handle cleanup)",
+                        id
+                    );
+                }
+                Slot::Guarded => {
+                    log::debug!(
+                        "Cleared Guarded slot for instance {} during shutdown",
+                        id
+                    );
+                }
+            }
+        }
+
+        if targets.is_empty() {
+            return;
+        }
+
+        for (id, pid, port, _) in &targets {
+            log::info!("Stopping instance {} (pid: {}, port: {})", id, pid, port);
+        }
+
+        let target_refs: Vec<(u32, &std::path::Path)> = targets
             .iter()
-            .map(|(_, info)| (info.pid, info.executable_path.as_path()))
+            .map(|(_, pid, _, path)| (*pid, path.as_path()))
             .collect();
-        graceful_shutdown(&targets);
+
+        graceful_shutdown(&target_refs);
+    }
+
+    /// Revert a `Stopping` slot back to `Live` after a failed shutdown,
+    /// so the user can retry. Emits `Running` if the slot was restored.
+    fn revert_stopping_to_live(&self, id: &str) {
+        let mut state = lock_mutex_recover(&self.state, "ProcessState");
+        if let Some(Slot::Stopping {
+            pid,
+            executable_path,
+            port,
+            dashboard_enabled,
+        }) = state.slots.remove(id)
+        {
+            state.slots.insert(
+                id.to_string(),
+                Slot::Live(InstanceProcess::new(
+                    pid,
+                    executable_path,
+                    port,
+                    dashboard_enabled,
+                )),
+            );
+            drop(state);
+            self.emit(id, InstanceState::Running);
+        }
+    }
+
+    /// Finalize a stop: remove the slot and emit Stopped.
+    fn finalize_stop(&self, id: &str) {
+        lock_mutex_recover(&self.state, "ProcessState")
+            .slots
+            .remove(id);
+        self.emit(id, InstanceState::Stopped);
+    }
+
+    fn emit(&self, instance_id: &str, state: InstanceState) {
+        let _ = self.runtime_events.send(RuntimeEvent {
+            instance_id: instance_id.to_string(),
+            state,
+        });
     }
 }
 
 impl Default for ProcessManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// RAII guard that prevents lifecycle operations on an instance.
+/// Released automatically when dropped.
+pub struct InstanceGuard {
+    instance_id: String,
+    state: Arc<Mutex<ProcessState>>,
+}
+
+impl Drop for InstanceGuard {
+    fn drop(&mut self) {
+        lock_mutex_recover(&self.state, "ProcessState")
+            .slots
+            .remove(&self.instance_id);
+    }
+}
+
+/// RAII guard that removes an orphaned `Slot::Starting` on panic or cancellation.
+/// Defuse it on all normal exit paths where the slot is already cleaned up.
+struct StartingSlotGuard {
+    instance_id: String,
+    state: Arc<Mutex<ProcessState>>,
+    defused: bool,
+}
+
+impl Drop for StartingSlotGuard {
+    fn drop(&mut self) {
+        if !self.defused {
+            lock_mutex_recover(&self.state, "ProcessState")
+                .slots
+                .remove(&self.instance_id);
+        }
     }
 }

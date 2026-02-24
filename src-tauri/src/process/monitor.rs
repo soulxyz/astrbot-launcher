@@ -1,36 +1,61 @@
 //! Runtime monitoring: liveness probes, health checks, and state reconciliation.
+//!
+//! All evaluation functions are standalone — they take snapshot data and return results.
+//! The monitor task (spawned by ProcessManager) calls `poll_instances` on a timer.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Instant;
 
-use crate::utils::sync::{read_lock_recover, write_lock_recover};
+use reqwest::Client;
+use tokio::sync::broadcast;
 
+use super::manager::{derive_health_state, ProcessState, Slot};
 #[cfg(target_os = "windows")]
 use super::control::is_process_alive;
 use super::control::is_expected_process_alive;
 use super::health::check_health;
-use super::manager::ProcessManager;
 #[cfg(target_os = "windows")]
 use super::win_api::get_pid_on_port;
 #[cfg(target_os = "windows")]
 use super::ALIVE_EXIT_THRESHOLD;
-use super::{InstanceState, MONITOR_INTERVAL, UNHEALTHY_THRESHOLD};
+use super::{InstanceState, RuntimeEvent, UNHEALTHY_THRESHOLD};
+use crate::utils::sync::lock_mutex_recover;
 
-/// Snapshot of an instance's state for the status check loop.
-struct InstanceCheckEntry {
+/// Snapshot of a single live instance for evaluation.
+struct LiveSnapshot {
     id: String,
     port: u16,
     pid: u32,
     executable_path: PathBuf,
     dashboard_enabled: bool,
     next_health_check_at: Option<Instant>,
-    instance_state: InstanceState,
+    health_failure_count: u32,
     #[cfg(target_os = "windows")]
     alive_failure_count: u32,
     #[cfg(target_os = "windows")]
     next_alive_check_at: Option<Instant>,
+}
+
+/// Outcome of evaluating a single instance's liveness and health.
+enum EvalOutcome {
+    /// Process is dead — slot should be removed.
+    Dead,
+    /// Process is alive — update its fields.
+    Alive(AliveUpdate),
+}
+
+/// Fields to write back for an alive instance (one per instance, no duplicates).
+struct AliveUpdate {
+    computed_state: InstanceState,
+    health_failure_count: u32,
+    next_health_check_at: Option<Instant>,
+    #[cfg(target_os = "windows")]
+    alive_failure_count: u32,
+    #[cfg(target_os = "windows")]
+    next_alive_check_at: Option<Instant>,
+    #[cfg(target_os = "windows")]
+    new_pid: Option<u32>,
 }
 
 #[cfg(target_os = "windows")]
@@ -40,365 +65,375 @@ enum LivenessProbeResult {
     Dead,
 }
 
-impl ProcessManager {
-    /// Start the background monitor that periodically polls all instances.
-    pub fn start_runtime_monitor(self: Arc<Self>) {
-        tauri::async_runtime::spawn(async move {
-            let mut interval = tokio::time::interval(MONITOR_INTERVAL);
-            loop {
-                interval.tick().await;
-                self.poll_instances().await;
-            }
+/// Entry point called by the monitor task on each tick.
+///
+/// Snap-then-apply: locks briefly to snapshot, evaluates concurrently with no
+/// lock held, then locks again to apply results.
+pub(super) async fn poll_instances(
+    state: &Mutex<ProcessState>,
+    http_client: &Client,
+    runtime_events: &broadcast::Sender<RuntimeEvent>,
+) {
+    // Phase 1: lock → snapshot Live slots → unlock
+    let entries: Vec<LiveSnapshot> = {
+        let state = lock_mutex_recover(state, "ProcessState");
+        if state.shutting_down {
+            return;
+        }
+        state
+            .slots
+            .iter()
+            .filter_map(|(id, slot)| {
+                if let Slot::Live(p) = slot {
+                    Some(LiveSnapshot {
+                        id: id.clone(),
+                        port: p.port,
+                        pid: p.pid,
+                        executable_path: p.executable_path.clone(),
+                        dashboard_enabled: p.dashboard_enabled,
+                        next_health_check_at: p.next_health_check_at,
+                        health_failure_count: p.health_failure_count,
+                        #[cfg(target_os = "windows")]
+                        alive_failure_count: p.alive_failure_count,
+                        #[cfg(target_os = "windows")]
+                        next_alive_check_at: p.next_alive_check_at,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
+
+    if entries.is_empty() {
+        return;
+    }
+
+    // Phase 2: evaluate (concurrent health checks)
+    let outcomes = evaluate_instances(&entries, http_client).await;
+
+    // Phase 3: lock → apply outcomes → unlock → collect events
+    let events = {
+        let mut state = lock_mutex_recover(state, "ProcessState");
+        apply_outcomes(&mut state, &outcomes)
+    };
+
+    // Phase 4: emit events (outside lock)
+    for (id, new_state) in events {
+        let _ = runtime_events.send(RuntimeEvent {
+            instance_id: id,
+            state: new_state,
         });
     }
+}
 
-    /// Evaluate liveness and health for every tracked instance, updating
-    /// internal state and emitting events as needed.
-    ///
-    /// - All instances: evaluate liveness first; dead → `Stopped` (remove).
-    ///   - On Windows, dashboard-enabled instances use liveness backoff and port→PID fallback;
-    ///     dashboard-disabled instances are stopped immediately when liveness validation fails.
-    /// - dashboard_enabled + alive: health check with exponential backoff.
-    ///   - healthy → `Running`
-    ///   - failures < UNHEALTHY_THRESHOLD → `Running` (tolerate)
-    ///   - failures >= UNHEALTHY_THRESHOLD → `Unhealthy`, emit event
-    /// - dashboard_disabled + alive → `Running`
-    pub(super) async fn poll_instances(&self) {
-        let now = Instant::now();
+/// Evaluate all instances. Liveness checks are synchronous; health checks run
+/// concurrently via `join_all`.
+async fn evaluate_instances(
+    entries: &[LiveSnapshot],
+    http_client: &Client,
+) -> Vec<(String, EvalOutcome)> {
+    let now = Instant::now();
+    let mut outcomes: Vec<(String, EvalOutcome)> = Vec::new();
+    let mut needs_health_check: Vec<(&LiveSnapshot, AliveUpdate)> = Vec::new();
 
-        // Snapshot all instances under a short-lived read lock.
-        let instances: Vec<InstanceCheckEntry> = {
-            let procs = read_lock_recover(&self.processes, "ProcessManager.processes");
-            procs
-                .iter()
-                .map(|(id, info)| InstanceCheckEntry {
-                    id: id.clone(),
-                    port: info.port,
-                    pid: info.pid,
-                    executable_path: info.executable_path.clone(),
-                    dashboard_enabled: info.dashboard_enabled,
-                    next_health_check_at: info.next_health_check_at,
-                    instance_state: info.state,
-                    #[cfg(target_os = "windows")]
-                    alive_failure_count: info.alive_failure_count,
-                    #[cfg(target_os = "windows")]
-                    next_alive_check_at: info.next_alive_check_at,
-                })
-                .collect()
+    for entry in entries {
+        let Some(update) = evaluate_liveness(entry, now) else {
+            outcomes.push((entry.id.clone(), EvalOutcome::Dead));
+            continue;
         };
 
-        let mut results = HashMap::new();
-        let mut dead_instances = Vec::new();
-
-        for entry in instances {
-            // Skip instances in transitional states managed by lifecycle code.
-            if matches!(
-                entry.instance_state,
-                InstanceState::Starting | InstanceState::Stopping
-            ) {
-                results.insert(entry.id, entry.instance_state);
-                continue;
-            }
-
-            // First: evaluate process liveness.
-            if !self.evaluate_liveness(&entry, now) {
-                dead_instances.push(entry.id.clone());
-                results.insert(entry.id, InstanceState::Stopped);
-                continue;
-            }
-
-            if !entry.dashboard_enabled {
-                // Process alive, no dashboard → Running
-                let mut procs = write_lock_recover(&self.processes, "ProcessManager.processes");
-                if let Some(info) = procs.get_mut(&entry.id) {
-                    info.clear_health_failure_state();
-                }
-                drop(procs);
-                results.insert(entry.id, InstanceState::Running);
-                continue;
-            }
-
-            // Dashboard enabled: perform health check with backoff.
-            let state = self.evaluate_health(&entry, now).await;
-            results.insert(entry.id, state);
+        if !entry.dashboard_enabled {
+            // Alive, no dashboard → use liveness defaults directly.
+            outcomes.push((entry.id.clone(), EvalOutcome::Alive(update)));
+            continue;
         }
 
-        // Remove dead instances.
-        if !dead_instances.is_empty() {
-            let mut procs = write_lock_recover(&self.processes, "ProcessManager.processes");
-            let mut removed_instances = Vec::new();
-            for id in &dead_instances {
-                if procs.remove(id).is_some() {
+        // Dashboard enabled: health check will overwrite health fields in update.
+        needs_health_check.push((entry, update));
+    }
+
+    // Concurrent health checks
+    let health_futures: Vec<_> = needs_health_check
+        .into_iter()
+        .map(|(entry, update)| evaluate_health_for_update(entry, update, now, http_client))
+        .collect();
+    let health_results = futures_util::future::join_all(health_futures).await;
+
+    outcomes.extend(health_results);
+    outcomes
+}
+
+/// Evaluate health and overwrite health fields in the liveness update.
+async fn evaluate_health_for_update(
+    entry: &LiveSnapshot,
+    mut update: AliveUpdate,
+    now: Instant,
+    http_client: &Client,
+) -> (String, EvalOutcome) {
+    let (computed_state, health_failure_count, next_health_check_at) =
+        evaluate_health(entry, now, http_client).await;
+
+    update.computed_state = computed_state;
+    update.health_failure_count = health_failure_count;
+    update.next_health_check_at = next_health_check_at;
+
+    (entry.id.clone(), EvalOutcome::Alive(update))
+}
+
+/// Apply monitor outcomes to the live process state. Returns events to emit.
+fn apply_outcomes(
+    state: &mut ProcessState,
+    outcomes: &[(String, EvalOutcome)],
+) -> Vec<(String, InstanceState)> {
+    let mut events = Vec::new();
+
+    for (id, outcome) in outcomes {
+        match outcome {
+            EvalOutcome::Dead => {
+                // Only remove slots still in Live state — another lifecycle
+                // method may have transitioned the slot in the meantime.
+                if matches!(state.slots.get(id), Some(Slot::Live(_))) {
+                    state.slots.remove(id);
                     log::info!("Removed dead process tracking entry for instance {}", id);
-                    removed_instances.push(id.clone());
+                    events.push((id.clone(), InstanceState::Stopped));
                 }
             }
-            drop(procs);
+            EvalOutcome::Alive(update) => {
+                if let Some(Slot::Live(p)) = state.slots.get_mut(id) {
+                    let old_state = derive_health_state(p);
 
-            for id in removed_instances {
-                self.emit_runtime_event(&id, InstanceState::Stopped);
-            }
-        }
-
-        // Sync computed states back, but never overwrite transitional states
-        // that external code (begin_stop / set_state) may have set while we
-        // were running async health checks.
-        {
-            let mut procs = write_lock_recover(&self.processes, "ProcessManager.processes");
-            for (id, state) in &results {
-                if let Some(info) = procs.get_mut(id) {
-                    if matches!(
-                        info.state,
-                        InstanceState::Starting | InstanceState::Stopping
-                    ) {
-                        continue;
+                    p.health_failure_count = update.health_failure_count;
+                    p.next_health_check_at = update.next_health_check_at;
+                    #[cfg(target_os = "windows")]
+                    {
+                        p.alive_failure_count = update.alive_failure_count;
+                        p.next_alive_check_at = update.next_alive_check_at;
+                        if let Some(new_pid) = update.new_pid {
+                            log::info!(
+                                "Instance {} PID updated: {} -> {} (port {})",
+                                id,
+                                p.pid,
+                                new_pid,
+                                p.port
+                            );
+                            p.pid = new_pid;
+                        }
                     }
-                    info.state = *state;
+
+                    let new_state = update.computed_state;
+                    if old_state != new_state {
+                        match new_state {
+                            InstanceState::Unhealthy => {
+                                events.push((id.clone(), InstanceState::Unhealthy));
+                            }
+                            InstanceState::Running if old_state == InstanceState::Unhealthy => {
+                                events.push((id.clone(), InstanceState::Running));
+                            }
+                            _ => {}
+                        }
+                    }
                 }
             }
         }
     }
 
-    // ── Health evaluation ────────────────────────────────────────────────
+    events
+}
 
-    /// Evaluate the health of a single dashboard-enabled instance.
-    ///
-    /// Returns the computed `InstanceState` after performing (or skipping) a
-    /// health check with exponential backoff.
-    async fn evaluate_health(&self, entry: &InstanceCheckEntry, now: Instant) -> InstanceState {
-        // Backoff: not yet time to check — use previous state.
-        if let Some(next_at) = entry.next_health_check_at {
-            if now < next_at {
-                let procs = read_lock_recover(&self.processes, "ProcessManager.processes");
-                return if procs
-                    .get(&entry.id)
-                    .is_some_and(|info| info.health_failure_count >= UNHEALTHY_THRESHOLD)
-                {
-                    InstanceState::Unhealthy
-                } else {
-                    InstanceState::Running
-                };
-            }
-        }
+// -- Health evaluation --------------------------------------------------------
 
-        let is_healthy = check_health(&self.http_client, entry.port).await;
-
-        if is_healthy {
-            self.handle_healthy_check(entry);
-            InstanceState::Running
-        } else {
-            self.handle_failed_check(entry, now)
-        }
-    }
-
-    /// Update tracking state after a successful health check.
-    fn handle_healthy_check(&self, entry: &InstanceCheckEntry) {
-        let mut procs = write_lock_recover(&self.processes, "ProcessManager.processes");
-        if let Some(info) = procs.get_mut(&entry.id) {
-            let was_unhealthy = info.health_failure_count >= UNHEALTHY_THRESHOLD;
-            if was_unhealthy {
-                log::info!(
-                    "Instance {} health restored after {} failures",
-                    entry.id,
-                    info.health_failure_count
-                );
-            }
-            info.clear_health_failure_state();
-
-            if was_unhealthy {
-                drop(procs);
-                self.emit_runtime_event(&entry.id, InstanceState::Running);
-            }
-        }
-    }
-
-    /// Update tracking state after a failed health check.
-    fn handle_failed_check(&self, entry: &InstanceCheckEntry, now: Instant) -> InstanceState {
-        let mut procs = write_lock_recover(&self.processes, "ProcessManager.processes");
-        let mut emit_unhealthy_event = false;
-        let state = if let Some(info) = procs.get_mut(&entry.id) {
-            let was_below_threshold = info.health_failure_count < UNHEALTHY_THRESHOLD;
-            info.health_failure_count += 1;
-            let backoff = info.calculate_health_backoff();
-            info.next_health_check_at = Some(now + backoff);
-
-            if info.health_failure_count >= UNHEALTHY_THRESHOLD {
-                if was_below_threshold {
-                    log::warn!(
-                        "Instance {} marked unhealthy after {} consecutive health check failures",
-                        entry.id,
-                        info.health_failure_count
-                    );
-                    emit_unhealthy_event = true;
-                }
+/// Evaluate a single instance's health (async, involves HTTP).
+///
+/// Returns `(computed_state, health_failure_count, next_health_check_at)`.
+async fn evaluate_health(
+    entry: &LiveSnapshot,
+    now: Instant,
+    http_client: &Client,
+) -> (InstanceState, u32, Option<Instant>) {
+    // Backoff: not yet time to check — use previous state.
+    if let Some(next_at) = entry.next_health_check_at {
+        if now < next_at {
+            let state = if entry.health_failure_count >= UNHEALTHY_THRESHOLD {
                 InstanceState::Unhealthy
             } else {
                 InstanceState::Running
-            }
-        } else {
-            InstanceState::Stopped
-        };
-        drop(procs);
-
-        if emit_unhealthy_event {
-            self.emit_runtime_event(&entry.id, InstanceState::Unhealthy);
-        }
-
-        state
-    }
-
-    // ── Liveness evaluation ──────────────────────────────────────────────
-
-    #[cfg(target_os = "windows")]
-    fn evaluate_liveness(&self, entry: &InstanceCheckEntry, now: Instant) -> bool {
-        if self.is_liveness_check_in_backoff(entry, now) {
-            return true;
-        }
-
-        match self.probe_liveness(entry) {
-            LivenessProbeResult::Alive => {
-                self.clear_alive_failure_state_if_needed(entry);
-                true
-            }
-            LivenessProbeResult::AliveWithNewPid(new_pid) => {
-                self.update_pid_after_probe(entry, new_pid)
-            }
-            LivenessProbeResult::Dead => {
-                // `dashboard_enabled` currently gates Windows liveness retry/backoff behavior.
-                if !entry.dashboard_enabled {
-                    return false;
-                }
-                self.handle_liveness_failure(entry, now)
-            }
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    fn is_liveness_check_in_backoff(&self, entry: &InstanceCheckEntry, now: Instant) -> bool {
-        entry.dashboard_enabled
-            && entry
-                .next_alive_check_at
-                .is_some_and(|next_at| now < next_at)
-    }
-
-    #[cfg(target_os = "windows")]
-    fn clear_alive_failure_state_if_needed(&self, entry: &InstanceCheckEntry) {
-        if entry.alive_failure_count == 0 && entry.next_alive_check_at.is_none() {
-            return;
-        }
-
-        let mut procs = write_lock_recover(&self.processes, "ProcessManager.processes");
-        if let Some(info) = procs.get_mut(&entry.id) {
-            info.clear_alive_failure_state();
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    fn update_pid_after_probe(&self, entry: &InstanceCheckEntry, new_pid: u32) -> bool {
-        let mut procs = write_lock_recover(&self.processes, "ProcessManager.processes");
-        if let Some(info) = procs.get_mut(&entry.id) {
-            log::info!(
-                "Instance {} PID updated: {} -> {} (port {})",
-                entry.id,
-                info.pid,
-                new_pid,
-                entry.port
-            );
-            info.pid = new_pid;
-            info.clear_alive_failure_state();
-            return true;
-        }
-        false
-    }
-
-    #[cfg(target_os = "windows")]
-    fn handle_liveness_failure(&self, entry: &InstanceCheckEntry, now: Instant) -> bool {
-        let (should_stop, current_failures, backoff_secs) = {
-            let mut procs = write_lock_recover(&self.processes, "ProcessManager.processes");
-            let Some(info) = procs.get_mut(&entry.id) else {
-                return false;
             };
-
-            info.alive_failure_count += 1;
-            let backoff = info.calculate_alive_backoff();
-            info.next_alive_check_at = Some(now + backoff);
-            (
-                info.alive_failure_count >= ALIVE_EXIT_THRESHOLD,
-                info.alive_failure_count,
-                backoff.as_secs(),
-            )
-        };
-
-        if should_stop {
-            log::warn!(
-                "Instance {} liveness probe failed {} times, treating process as exited",
-                entry.id,
-                current_failures
-            );
-            false
-        } else {
-            log::debug!(
-                "Instance {} liveness probe failed (count: {}), retry in {}s",
-                entry.id,
-                current_failures,
-                backoff_secs
-            );
-            true
+            return (state, entry.health_failure_count, entry.next_health_check_at);
         }
     }
 
-    #[cfg(target_os = "windows")]
-    fn probe_liveness(&self, entry: &InstanceCheckEntry) -> LivenessProbeResult {
-        if is_expected_process_alive(entry.pid, &entry.executable_path) {
-            return LivenessProbeResult::Alive;
+    let is_healthy = check_health(http_client, entry.port).await;
+
+    if is_healthy {
+        let was_unhealthy = entry.health_failure_count >= UNHEALTHY_THRESHOLD;
+        if was_unhealthy {
+            log::info!(
+                "Instance {} health restored after {} failures",
+                entry.id,
+                entry.health_failure_count
+            );
         }
+        (InstanceState::Running, 0, None)
+    } else {
+        let new_count = entry.health_failure_count + 1;
+        let backoff = calculate_health_backoff(new_count);
+        let next_at = Some(now + backoff);
 
-        if let Some(new_pid) = get_pid_on_port(entry.port) {
-            if new_pid == entry.pid {
-                if entry.alive_failure_count == 0 {
-                    log::warn!(
-                        "Instance {} liveness probe failed for PID {}, but port {} still resolves to the same PID",
-                        entry.id,
-                        entry.pid,
-                        entry.port
-                    );
-                } else {
-                    log::debug!(
-                        "Instance {} still resolves port {} to PID {} while liveness probe remains failed",
-                        entry.id,
-                        entry.port,
-                        entry.pid
-                    );
-                }
-                return LivenessProbeResult::Dead;
-            }
-
-            if is_expected_process_alive(new_pid, &entry.executable_path) {
-                return LivenessProbeResult::AliveWithNewPid(new_pid);
-            }
-
-            if is_process_alive(new_pid) {
+        let state = if new_count >= UNHEALTHY_THRESHOLD {
+            if entry.health_failure_count < UNHEALTHY_THRESHOLD {
                 log::warn!(
-                    "Instance {} rejected PID update {} -> {}: executable path mismatch",
+                    "Instance {} marked unhealthy after {} consecutive health check failures",
+                    entry.id,
+                    new_count
+                );
+            }
+            InstanceState::Unhealthy
+        } else {
+            InstanceState::Running
+        };
+
+        (state, new_count, next_at)
+    }
+}
+
+fn calculate_health_backoff(failure_count: u32) -> std::time::Duration {
+    let secs = 1u64 << failure_count.min(5); // 1, 2, 4, 8, 16, 32
+    std::time::Duration::from_secs(secs).min(super::MAX_BACKOFF)
+}
+
+// -- Liveness evaluation ------------------------------------------------------
+
+#[cfg(target_os = "windows")]
+fn evaluate_liveness(entry: &LiveSnapshot, now: Instant) -> Option<AliveUpdate> {
+    // Backoff check
+    if entry.dashboard_enabled {
+        if let Some(next_at) = entry.next_alive_check_at {
+            if now < next_at {
+                return Some(AliveUpdate {
+                    computed_state: InstanceState::Running,
+                    health_failure_count: entry.health_failure_count,
+                    next_health_check_at: entry.next_health_check_at,
+                    alive_failure_count: entry.alive_failure_count,
+                    next_alive_check_at: entry.next_alive_check_at,
+                    new_pid: None,
+                });
+            }
+        }
+    }
+
+    match probe_liveness(entry) {
+        LivenessProbeResult::Alive => Some(AliveUpdate {
+            computed_state: InstanceState::Running,
+            health_failure_count: entry.health_failure_count,
+            next_health_check_at: entry.next_health_check_at,
+            alive_failure_count: 0,
+            next_alive_check_at: None,
+            new_pid: None,
+        }),
+        LivenessProbeResult::AliveWithNewPid(new_pid) => Some(AliveUpdate {
+            computed_state: InstanceState::Running,
+            health_failure_count: entry.health_failure_count,
+            next_health_check_at: entry.next_health_check_at,
+            alive_failure_count: 0,
+            next_alive_check_at: None,
+            new_pid: Some(new_pid),
+        }),
+        LivenessProbeResult::Dead => {
+            if !entry.dashboard_enabled {
+                return None;
+            }
+            handle_liveness_failure(entry, now)
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn handle_liveness_failure(entry: &LiveSnapshot, now: Instant) -> Option<AliveUpdate> {
+    let new_count = entry.alive_failure_count + 1;
+    let backoff_secs = 1u64 << new_count.min(5);
+    let backoff = std::time::Duration::from_secs(backoff_secs).min(super::MAX_BACKOFF);
+
+    if new_count >= ALIVE_EXIT_THRESHOLD {
+        log::warn!(
+            "Instance {} liveness probe failed {} times, treating process as exited",
+            entry.id,
+            new_count
+        );
+        None
+    } else {
+        log::debug!(
+            "Instance {} liveness probe failed (count: {}), retry in {}s",
+            entry.id,
+            new_count,
+            backoff_secs
+        );
+        Some(AliveUpdate {
+            computed_state: InstanceState::Running,
+            health_failure_count: entry.health_failure_count,
+            next_health_check_at: entry.next_health_check_at,
+            alive_failure_count: new_count,
+            next_alive_check_at: Some(now + backoff),
+            new_pid: None,
+        })
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn probe_liveness(entry: &LiveSnapshot) -> LivenessProbeResult {
+    if is_expected_process_alive(entry.pid, &entry.executable_path) {
+        return LivenessProbeResult::Alive;
+    }
+
+    if let Some(new_pid) = get_pid_on_port(entry.port) {
+        if new_pid == entry.pid {
+            if entry.alive_failure_count == 0 {
+                log::warn!(
+                    "Instance {} liveness probe failed for PID {}, but port {} still resolves to the same PID",
                     entry.id,
                     entry.pid,
-                    new_pid
+                    entry.port
                 );
             } else {
                 log::debug!(
-                    "Instance {} observed transient PID {} on port {}, but process was not alive during validation",
+                    "Instance {} still resolves port {} to PID {} while liveness probe remains failed",
                     entry.id,
-                    new_pid,
-                    entry.port
+                    entry.port,
+                    entry.pid
                 );
             }
+            return LivenessProbeResult::Dead;
         }
 
-        LivenessProbeResult::Dead
+        if is_expected_process_alive(new_pid, &entry.executable_path) {
+            return LivenessProbeResult::AliveWithNewPid(new_pid);
+        }
+
+        if is_process_alive(new_pid) {
+            log::warn!(
+                "Instance {} rejected PID update {} -> {}: executable path mismatch",
+                entry.id,
+                entry.pid,
+                new_pid
+            );
+        } else {
+            log::debug!(
+                "Instance {} observed transient PID {} on port {}, but process was not alive during validation",
+                entry.id,
+                new_pid,
+                entry.port
+            );
+        }
     }
 
-    #[cfg(not(target_os = "windows"))]
-    fn evaluate_liveness(&self, entry: &InstanceCheckEntry, _now: Instant) -> bool {
-        is_expected_process_alive(entry.pid, &entry.executable_path)
-    }
+    LivenessProbeResult::Dead
+}
+
+#[cfg(not(target_os = "windows"))]
+fn evaluate_liveness(entry: &LiveSnapshot, _now: Instant) -> Option<AliveUpdate> {
+    is_expected_process_alive(entry.pid, &entry.executable_path).then_some(AliveUpdate {
+        computed_state: InstanceState::Running,
+        health_failure_count: entry.health_failure_count,
+        next_health_check_at: entry.next_health_check_at,
+    })
 }
