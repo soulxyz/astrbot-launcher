@@ -61,7 +61,7 @@ enum MonitorOutcome {
 /// lock held, then locks again to apply results.
 pub(super) async fn poll_instances(
     state: &Mutex<ProcessState>,
-    http_client: &Client,
+    http_client: Option<&Client>,
     runtime_events: &broadcast::Sender<RuntimeEvent>,
 ) {
     // Phase 1: lock → snapshot Live slots → unlock
@@ -117,7 +117,40 @@ pub(super) async fn poll_instances(
 
 /// Evaluate all instances. Liveness checks are synchronous; health checks run
 /// concurrently via `join_all`.
-async fn evaluate_instances(entries: &[LiveSnapshot], http_client: &Client) -> Vec<MonitorOutcome> {
+async fn evaluate_instances(
+    entries: &[LiveSnapshot],
+    http_client: Option<&Client>,
+) -> Vec<MonitorOutcome> {
+    match http_client {
+        Some(client) => evaluate_instances_with_health(entries, client).await,
+        None => evaluate_instances_liveness_only(entries),
+    }
+}
+
+/// Liveness-only evaluation when no HTTP client is available.
+fn evaluate_instances_liveness_only(entries: &[LiveSnapshot]) -> Vec<MonitorOutcome> {
+    let now = Instant::now();
+    let mut outcomes = Vec::new();
+
+    for entry in entries {
+        let Some(outcome) = evaluate_liveness(entry, now) else {
+            outcomes.push(MonitorOutcome::Dead {
+                id: entry.id.clone(),
+            });
+            continue;
+        };
+
+        outcomes.push(outcome);
+    }
+
+    outcomes
+}
+
+/// Full evaluation with concurrent HTTP health checks for dashboard-enabled instances.
+async fn evaluate_instances_with_health(
+    entries: &[LiveSnapshot],
+    http_client: &Client,
+) -> Vec<MonitorOutcome> {
     let now = Instant::now();
     let mut outcomes: Vec<MonitorOutcome> = Vec::new();
     let mut needs_health_check: Vec<(&LiveSnapshot, MonitorOutcome)> = Vec::new();
@@ -140,7 +173,7 @@ async fn evaluate_instances(entries: &[LiveSnapshot], http_client: &Client) -> V
         needs_health_check.push((entry, outcome));
     }
 
-    // Concurrent health checks (inlined — no separate helper function)
+    // Concurrent health checks
     let health_futures: Vec<_> = needs_health_check
         .into_iter()
         .map(|(entry, outcome)| async move {
