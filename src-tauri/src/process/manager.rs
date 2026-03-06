@@ -158,7 +158,7 @@ pub(super) fn derive_health_state(p: &InstanceProcess) -> InstanceState {
 pub struct ProcessManager {
     state: Arc<Mutex<ProcessState>>,
     runtime_events: broadcast::Sender<RuntimeEvent>,
-    http_client: Client,
+    http_client: Option<Client>,
 }
 
 impl ProcessManager {
@@ -169,11 +169,21 @@ impl ProcessManager {
             shutting_down: false,
         }));
 
-        let http_client = Client::builder()
+        let http_client = match Client::builder()
             .timeout(Duration::from_secs(3))
             .no_proxy()
             .build()
-            .expect("Failed to create monitor HTTP client (TLS init failure)");
+        {
+            Ok(client) => Some(client),
+            Err(e) => {
+                log::error!(
+                    "Failed to create monitor HTTP client (TLS init failure): {}. \
+                     Health checks will be degraded to liveness-only mode.",
+                    e
+                );
+                None
+            }
+        };
 
         Self {
             state,
@@ -194,7 +204,8 @@ impl ProcessManager {
 
             loop {
                 interval.tick().await;
-                monitor::poll_instances(&monitor_state, &http_client, &monitor_events).await;
+                monitor::poll_instances(&monitor_state, http_client.as_ref(), &monitor_events)
+                    .await;
             }
         });
     }

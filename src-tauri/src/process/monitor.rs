@@ -61,7 +61,7 @@ enum MonitorOutcome {
 /// lock held, then locks again to apply results.
 pub(super) async fn poll_instances(
     state: &Mutex<ProcessState>,
-    http_client: &Client,
+    http_client: Option<&Client>,
     runtime_events: &broadcast::Sender<RuntimeEvent>,
 ) {
     // Phase 1: lock → snapshot Live slots → unlock
@@ -117,7 +117,10 @@ pub(super) async fn poll_instances(
 
 /// Evaluate all instances. Liveness checks are synchronous; health checks run
 /// concurrently via `join_all`.
-async fn evaluate_instances(entries: &[LiveSnapshot], http_client: &Client) -> Vec<MonitorOutcome> {
+async fn evaluate_instances(
+    entries: &[LiveSnapshot],
+    http_client: Option<&Client>,
+) -> Vec<MonitorOutcome> {
     let now = Instant::now();
     let mut outcomes: Vec<MonitorOutcome> = Vec::new();
     let mut needs_health_check: Vec<(&LiveSnapshot, MonitorOutcome)> = Vec::new();
@@ -136,38 +139,50 @@ async fn evaluate_instances(entries: &[LiveSnapshot], http_client: &Client) -> V
             continue;
         }
 
-        // Dashboard enabled: health check will overwrite health fields in outcome.
-        needs_health_check.push((entry, outcome));
+        match http_client {
+            Some(_) => {
+                // Dashboard enabled: health check will overwrite health fields in outcome.
+                needs_health_check.push((entry, outcome));
+            }
+            None => {
+                // No HTTP client available — skip HTTP health check, use liveness only.
+                outcomes.push(outcome);
+            }
+        }
     }
 
     // Concurrent health checks (inlined — no separate helper function)
-    let health_futures: Vec<_> = needs_health_check
-        .into_iter()
-        .map(|(entry, outcome)| async move {
-            let (health_failure_count, next_health_check_at) =
-                evaluate_health(entry, now, http_client).await;
-            match outcome {
-                MonitorOutcome::Alive {
-                    id,
-                    alive_failure_count,
-                    next_alive_check_at,
-                    new_pid,
-                    ..
-                } => MonitorOutcome::Alive {
-                    id,
-                    health_failure_count,
-                    next_health_check_at,
-                    alive_failure_count,
-                    next_alive_check_at,
-                    new_pid,
-                },
-                dead @ MonitorOutcome::Dead { .. } => dead,
-            }
-        })
-        .collect();
-    let health_results = futures_util::future::join_all(health_futures).await;
+    // needs_health_check is only populated when http_client is Some.
+    if let Some(client) = http_client {
+        let health_futures: Vec<_> = needs_health_check
+            .into_iter()
+            .map(|(entry, outcome)| async move {
+                let (health_failure_count, next_health_check_at) =
+                    evaluate_health(entry, now, client).await;
+                match outcome {
+                    MonitorOutcome::Alive {
+                        id,
+                        alive_failure_count,
+                        next_alive_check_at,
+                        new_pid,
+                        ..
+                    } => MonitorOutcome::Alive {
+                        id,
+                        health_failure_count,
+                        next_health_check_at,
+                        alive_failure_count,
+                        next_alive_check_at,
+                        new_pid,
+                    },
+                    dead @ MonitorOutcome::Dead { .. } => dead,
+                }
+            })
+            .collect();
+        let health_results = futures_util::future::join_all(health_futures).await;
 
-    outcomes.extend(health_results);
+        outcomes.extend(health_results);
+    }
+
     outcomes
 }
 
