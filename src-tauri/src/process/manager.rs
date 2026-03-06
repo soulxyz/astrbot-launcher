@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use reqwest::Client;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 
 use super::control::graceful_shutdown;
 use super::monitor;
@@ -159,11 +159,13 @@ pub struct ProcessManager {
     state: Arc<Mutex<ProcessState>>,
     runtime_events: broadcast::Sender<RuntimeEvent>,
     http_client: Option<Client>,
+    shutdown_signal: watch::Sender<bool>,
 }
 
 impl ProcessManager {
     pub fn new() -> Self {
         let (runtime_events, _) = broadcast::channel(128);
+        let (shutdown_signal, _) = watch::channel(false);
         let state = Arc::new(Mutex::new(ProcessState {
             slots: HashMap::new(),
             shutting_down: false,
@@ -186,6 +188,7 @@ impl ProcessManager {
             state,
             runtime_events,
             http_client,
+            shutdown_signal,
         }
     }
 
@@ -404,34 +407,37 @@ impl ProcessManager {
     ///
     /// Precondition: the caller has already inserted `Slot::Starting` for `id`.
     async fn launch_and_finalize(&self, id: &str, app_handle: &tauri::AppHandle) -> Result<u16> {
-        let result = lifecycle::launch_instance(id, app_handle).await;
+        let result =
+            lifecycle::launch_instance(id, app_handle, self.shutdown_signal.subscribe()).await;
 
-        let mut state = lock_mutex_recover(&self.state, "ProcessState");
-
-        // If shutting down, kill any late-arriving process to prevent orphans.
-        if state.shutting_down {
-            state.slots.remove(id);
-            drop(state);
+        let shutting_down = {
+            let mut state = lock_mutex_recover(&self.state, "ProcessState");
+            if state.shutting_down {
+                state.slots.remove(id);
+                true
+            } else {
+                false
+            }
+        };
+        if shutting_down {
             if let Ok(launch) = result {
                 log::info!(
                     "Killing late-started instance {} (pid: {}) due to shutdown",
                     id,
                     launch.pid
                 );
-                let pid = launch.pid;
-                let exe = launch.executable_path;
-                let late_id = id.to_string();
-                tokio::spawn(async move {
-                    if let Err(e) = lifecycle::shutdown_instance(pid, exe).await {
-                        log::warn!("Failed to kill late-started instance {}: {}", late_id, e);
-                    }
-                });
+                if let Err(e) =
+                    lifecycle::shutdown_instance(launch.pid, launch.executable_path).await
+                {
+                    log::warn!("Failed to kill late-started instance {}: {}", id, e);
+                }
             }
             return Err(AppError::process(format!(
                 "Cannot start instance {id}: application is shutting down"
             )));
         }
 
+        let mut state = lock_mutex_recover(&self.state, "ProcessState");
         match result {
             Ok(launch) => {
                 let port = launch.port;
@@ -465,6 +471,7 @@ impl ProcessManager {
             let mut state = lock_mutex_recover(&self.state, "ProcessState");
             state.drain_for_shutdown()
         };
+        let _ = self.shutdown_signal.send(true);
 
         if entries.is_empty() {
             return;

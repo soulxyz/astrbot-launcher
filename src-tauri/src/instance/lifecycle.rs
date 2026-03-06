@@ -3,13 +3,13 @@
 //! These functions do not interact with `ProcessManager`. On success they return
 //! a `LaunchResult`; the coordinator handles all state transitions.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 
 use tauri::AppHandle;
 use tokio::io::{AsyncBufReadExt as _, BufReader};
 use tokio::process::Command;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use super::crud::is_dashboard_enabled;
 use super::deploy::{deploy_instance, emit_progress};
@@ -38,6 +38,29 @@ pub struct LaunchResult {
     pub dashboard_enabled: bool,
 }
 
+fn cancel_startup_due_to_shutdown(
+    instance_id: &str,
+    pid: u32,
+    executable_path: &Path,
+) -> Result<LaunchResult> {
+    if can_signal_expected_process(pid, executable_path) {
+        if let Err(kill_err) = force_kill(pid) {
+            log::warn!(
+                "Failed to kill shutdown-cancelled instance {}: {}",
+                instance_id,
+                kill_err
+            );
+        }
+    }
+    log::warn!(
+        "Instance {} startup cancelled: application is shutting down",
+        instance_id
+    );
+    Err(AppError::process(format!(
+        "Cannot start instance {instance_id}: application is shutting down"
+    )))
+}
+
 /// Resolve the executable path for a freshly spawned child, killing it on failure.
 async fn resolve_child_executable_path(
     child: &mut tokio::process::Child,
@@ -63,7 +86,11 @@ async fn resolve_child_executable_path(
 ///
 /// Does NOT interact with ProcessManager. On failure, cleans up (kills child
 /// if spawned). On success, returns `LaunchResult`.
-pub async fn launch_instance(instance_id: &str, app_handle: &AppHandle) -> Result<LaunchResult> {
+pub async fn launch_instance(
+    instance_id: &str,
+    app_handle: &AppHandle,
+    mut shutdown_signal: watch::Receiver<bool>,
+) -> Result<LaunchResult> {
     validate_instance_id(instance_id)?;
     log::debug!("Starting instance {}", instance_id);
 
@@ -231,6 +258,15 @@ pub async fn launch_instance(instance_id: &str, app_handle: &AppHandle) -> Resul
     tokio::pin!(timeout);
     tokio::select! {
         biased;
+        _ = shutdown_signal.changed() => {
+            if *shutdown_signal.borrow() {
+                cancel_startup_due_to_shutdown(instance_id, pid, &executable_path)
+            } else {
+                Err(AppError::process(format!(
+                    "Cannot start instance {instance_id}: application is shutting down"
+                )))
+            }
+        }
         startup_signal = startup_rx.recv() => {
             if startup_signal.is_none() {
                 log::error!("Instance {} startup log stream closed unexpectedly", instance_id);
