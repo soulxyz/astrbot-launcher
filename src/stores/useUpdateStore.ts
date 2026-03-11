@@ -2,13 +2,15 @@ import { create } from 'zustand';
 import { check, type Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 
+type CheckResult = 'found' | 'latest' | 'error';
+
 interface UpdateState {
   hasUpdate: boolean;
   newVersion: string;
   releaseNotes: string;
   checking: boolean;
   installing: boolean;
-  checkForUpdate: () => Promise<boolean>;
+  checkForUpdate: () => Promise<CheckResult>;
   installUpdate: () => Promise<boolean>;
 }
 
@@ -22,7 +24,7 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
   installing: false,
 
   checkForUpdate: async () => {
-    if (get().checking) return false;
+    if (get().checking) return get().hasUpdate ? 'found' : 'latest';
     set({ checking: true });
     try {
       const update = await check();
@@ -33,16 +35,17 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
           newVersion: update.version,
           releaseNotes: update.body ?? '',
         });
+        return 'found';
       } else {
         cachedUpdate = null;
         set({ hasUpdate: false, newVersion: '', releaseNotes: '' });
+        return 'latest';
       }
-      return true;
     } catch (e) {
       cachedUpdate = null;
       set({ hasUpdate: false, newVersion: '', releaseNotes: '' });
       console.error('Update check failed:', e);
-      return false;
+      return 'error';
     } finally {
       set({ checking: false });
     }

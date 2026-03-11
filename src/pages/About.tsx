@@ -17,10 +17,10 @@ export default function About() {
   }, []);
 
   const handleCheckUpdate = async () => {
-    const success = await checkForUpdate();
-    if (!success) {
+    const result = await checkForUpdate();
+    if (result === 'error') {
       message.error('检查更新失败');
-    } else if (!useUpdateStore.getState().hasUpdate) {
+    } else if (result === 'latest') {
       message.success('已是最新版本');
     }
   };

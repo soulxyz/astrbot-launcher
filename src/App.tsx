@@ -23,6 +23,7 @@ const WebUIView = lazy(() => import('./pages/WebUIView'));
 import './App.css';
 
 const { Sider, Content } = Layout;
+const UPDATE_INTERVAL_MS = 16 * 60 * 60 * 1000;
 
 function AppLayout() {
   const navigate = useNavigate();
@@ -115,7 +116,6 @@ function App({ isMacOS }: { isMacOS: boolean }) {
     void useAppStore.getState().reloadSnapshot();
     void useUpdateStore.getState().checkForUpdate();
 
-    const UPDATE_INTERVAL_MS = 16 * 60 * 60 * 1000;
     const timer = setInterval(() => {
       void useUpdateStore.getState().checkForUpdate();
     }, UPDATE_INTERVAL_MS);
