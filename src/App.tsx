@@ -63,7 +63,11 @@ function AppLayout() {
     {
       key: '/about',
       icon: <InfoCircleOutlined />,
-      label: <Badge dot={hasUpdate} offset={[6, 0]}>关于</Badge>,
+      label: (
+        <Badge dot={hasUpdate} offset={[6, 0]}>
+          关于
+        </Badge>
+      ),
     },
   ];
 
