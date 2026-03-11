@@ -110,10 +110,7 @@ pub async fn pip_install_requirements(
     let proxy_env_vars = match proxy::build_proxy_env_vars(config) {
         Ok(vars) => vars,
         Err(e) => {
-            log::warn!(
-                "Failed to prepare proxy env for pip install, fallback to no proxy: {}",
-                e
-            );
+            log::warn!("Failed to prepare proxy env for pip install: {}", e);
             Vec::new()
         }
     };
