@@ -10,11 +10,10 @@ interface UpdateState {
   releaseNotes: string;
   checking: boolean;
   installing: boolean;
+  pendingUpdate: Update | null;
   checkForUpdate: () => Promise<CheckResult>;
   installUpdate: () => Promise<boolean>;
 }
-
-let cachedUpdate: Update | null = null;
 
 export const useUpdateStore = create<UpdateState>((set, get) => ({
   hasUpdate: false,
@@ -22,6 +21,7 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
   releaseNotes: '',
   checking: false,
   installing: false,
+  pendingUpdate: null,
 
   checkForUpdate: async () => {
     if (get().checking) return get().hasUpdate ? 'found' : 'latest';
@@ -29,21 +29,19 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
     try {
       const update = await check();
       if (update) {
-        cachedUpdate = update;
         set({
           hasUpdate: true,
           newVersion: update.version,
           releaseNotes: update.body ?? '',
+          pendingUpdate: update,
         });
         return 'found';
       } else {
-        cachedUpdate = null;
-        set({ hasUpdate: false, newVersion: '', releaseNotes: '' });
+        set({ hasUpdate: false, newVersion: '', releaseNotes: '', pendingUpdate: null });
         return 'latest';
       }
     } catch (e) {
-      cachedUpdate = null;
-      set({ hasUpdate: false, newVersion: '', releaseNotes: '' });
+      set({ hasUpdate: false, newVersion: '', releaseNotes: '', pendingUpdate: null });
       console.error('Update check failed:', e);
       return 'error';
     } finally {
@@ -52,10 +50,11 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
   },
 
   installUpdate: async () => {
-    if (!cachedUpdate) return false;
+    const { pendingUpdate } = get();
+    if (!pendingUpdate) return false;
     set({ installing: true });
     try {
-      await cachedUpdate.downloadAndInstall();
+      await pendingUpdate.downloadAndInstall();
       await relaunch();
       return true;
     } catch (e) {
