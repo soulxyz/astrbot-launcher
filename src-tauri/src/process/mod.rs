@@ -21,25 +21,30 @@ pub use control::{
 };
 pub use manager::ProcessManager;
 
-/// Maximum backoff interval between liveness probes.
-const MAX_BACKOFF: Duration = Duration::from_secs(30);
+/// Timeout (in seconds) for waiting for the startup log message.
+pub const STARTUP_TIMEOUT_SECS: u64 = 300;
 
-/// Capped exponential backoff: `2^count` seconds, clamped to [`MAX_BACKOFF`].
-pub(super) fn calculate_backoff(failure_count: u32) -> Duration {
-    let secs = 1u64 << failure_count.min(5); // 1, 2, 4, 8, 16, 32
-    Duration::from_secs(secs).min(MAX_BACKOFF)
-}
+/// Timeout (in seconds) for liveness probes. After this many seconds of
+/// consecutive probe failures, the process is treated as dead.
+pub const LIVENESS_TIMEOUT_SECS: u64 = 300;
 
-/// Runtime monitor tick interval.
-const MONITOR_INTERVAL: Duration = Duration::from_secs(5);
+/// Liveness probe interval in seconds.
+const LIVENESS_PROBE_INTERVAL_SECS: u64 = 5;
+
+/// Runtime monitor tick interval (also the fixed liveness probe interval).
+const MONITOR_INTERVAL: Duration = Duration::from_secs(LIVENESS_PROBE_INTERVAL_SECS);
 
 /// Timeout for graceful shutdown before force killing.
 const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// On Windows, number of consecutive liveness probe failures before treating
 /// process-alive as definitively false.
+///
+/// Computed as `ceil(LIVENESS_TIMEOUT_SECS / LIVENESS_PROBE_INTERVAL_SECS)` so
+/// the total tolerance window is at least [`LIVENESS_TIMEOUT_SECS`].
 #[cfg(target_os = "windows")]
-const ALIVE_EXIT_THRESHOLD: u32 = 5;
+const ALIVE_EXIT_THRESHOLD: u32 =
+    LIVENESS_TIMEOUT_SECS.div_ceil(LIVENESS_PROBE_INTERVAL_SECS) as u32;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -66,7 +71,7 @@ pub struct InstanceProcess {
     /// Number of consecutive failed liveness probes.
     /// Always 0 on non-Windows (no retry mechanism).
     pub(crate) alive_failure_count: u32,
-    /// When to perform the next liveness probe (for exponential backoff).
+    /// When to perform the next liveness probe (fixed interval).
     /// Always `None` on non-Windows (no retry mechanism).
     pub(crate) next_alive_check_at: Option<std::time::Instant>,
 }
