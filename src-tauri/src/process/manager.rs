@@ -6,14 +6,11 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
-use reqwest::Client;
 use tokio::sync::{broadcast, watch};
 
 use super::control::graceful_shutdown;
 use super::monitor;
-use super::UNHEALTHY_THRESHOLD;
 use super::{InstanceProcess, InstanceRuntimeInfo, InstanceState, RuntimeEvent};
 use crate::backup::find_pending_auto_backup;
 use crate::error::{AppError, ErrorKind, Result};
@@ -27,7 +24,7 @@ use crate::utils::sync::lock_mutex_recover;
 pub(super) enum Slot {
     /// Launch IO in progress.
     Starting,
-    /// Process running (healthy or unhealthy, derived from `InstanceProcess`).
+    /// Process running.
     Live(InstanceProcess),
     /// Shutdown IO in progress. Keeps the same process info so the exit
     /// handler can force-kill processes that are still shutting down.
@@ -144,21 +141,11 @@ impl ProcessState {
     }
 }
 
-/// Derive the health state from an `InstanceProcess` without storing it.
-pub(super) fn derive_health_state(p: &InstanceProcess) -> InstanceState {
-    if p.health_failure_count >= UNHEALTHY_THRESHOLD {
-        InstanceState::Unhealthy
-    } else {
-        InstanceState::Running
-    }
-}
-
 /// Manages running instance processes via a shared mutex-guarded state.
 #[derive(Clone)]
 pub struct ProcessManager {
     state: Arc<Mutex<ProcessState>>,
     runtime_events: broadcast::Sender<RuntimeEvent>,
-    http_client: Option<Client>,
     shutdown_signal: watch::Sender<bool>,
 }
 
@@ -171,23 +158,9 @@ impl ProcessManager {
             shutting_down: false,
         }));
 
-        let http_client = Client::builder()
-            .timeout(Duration::from_secs(3))
-            .no_proxy()
-            .build()
-            .map_err(|e| {
-                log::error!(
-                    "Failed to create monitor HTTP client: {}. \
-                     Health checks will be degraded to liveness-only mode.",
-                    e
-                );
-            })
-            .ok();
-
         Self {
             state,
             runtime_events,
-            http_client,
             shutdown_signal,
         }
     }
@@ -198,14 +171,11 @@ impl ProcessManager {
     pub fn start_monitor(&self) {
         let monitor_state = Arc::clone(&self.state);
         let monitor_events = self.runtime_events.clone();
-        let http_client = self.http_client.clone();
         tauri::async_runtime::spawn(async move {
             let mut interval = tokio::time::interval(super::MONITOR_INTERVAL);
-
             loop {
                 interval.tick().await;
-                monitor::poll_instances(&monitor_state, http_client.as_ref(), &monitor_events)
-                    .await;
+                monitor::poll_instances(&monitor_state, &monitor_events);
             }
         });
     }
@@ -241,7 +211,6 @@ impl ProcessManager {
                 let info = match &entry.slot {
                     Some(Slot::Starting) => InstanceRuntimeInfo::Starting,
                     Some(Slot::Live(p)) => InstanceRuntimeInfo::Live {
-                        state: derive_health_state(p),
                         port: p.port,
                         dashboard_enabled: p.dashboard_enabled,
                     },

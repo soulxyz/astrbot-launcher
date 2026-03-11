@@ -1,7 +1,6 @@
 //! Process management utilities.
 
 mod control;
-mod health;
 mod manager;
 mod monitor;
 
@@ -22,13 +21,10 @@ pub use control::{
 };
 pub use manager::ProcessManager;
 
-/// Maximum backoff interval between health checks.
+/// Maximum backoff interval between liveness probes.
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
 /// Capped exponential backoff: `2^count` seconds, clamped to [`MAX_BACKOFF`].
-///
-/// Shared by health checks and liveness probes so the formula stays in one
-/// place.  Callers can wrap this if they ever need independent tuning.
 pub(super) fn calculate_backoff(failure_count: u32) -> Duration {
     let secs = 1u64 << failure_count.min(5); // 1, 2, 4, 8, 16, 32
     Duration::from_secs(secs).min(MAX_BACKOFF)
@@ -39,9 +35,6 @@ const MONITOR_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Timeout for graceful shutdown before force killing.
 const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// Number of consecutive health check failures before marking as unhealthy.
-const UNHEALTHY_THRESHOLD: u32 = 3;
 
 /// On Windows, number of consecutive liveness probe failures before treating
 /// process-alive as definitively false.
@@ -55,7 +48,6 @@ pub enum InstanceState {
     Starting,
     Running,
     Stopping,
-    Unhealthy,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -65,20 +57,12 @@ pub struct RuntimeEvent {
 }
 
 /// Information about a running instance.
-///
-/// The instance's health state (Running vs Unhealthy) is derived from
-/// `health_failure_count` rather than stored explicitly — see
-/// [`manager::derive_health_state`].
 #[derive(Debug, Clone)]
 pub struct InstanceProcess {
     pub pid: u32,
     pub executable_path: PathBuf,
     pub port: u16,
     pub dashboard_enabled: bool,
-    /// When to perform the next health check (for exponential backoff).
-    pub(crate) next_health_check_at: Option<std::time::Instant>,
-    /// Number of consecutive health check failures.
-    pub(crate) health_failure_count: u32,
     /// Number of consecutive failed liveness probes.
     /// Always 0 on non-Windows (no retry mechanism).
     pub(crate) alive_failure_count: u32,
@@ -97,12 +81,8 @@ pub enum InstanceRuntimeInfo {
     /// Launch in progress — config-derived fields are read from their
     /// sources of truth at snapshot assembly time.
     Starting,
-    /// Process running. Health state derived from `InstanceProcess`.
-    Live {
-        state: InstanceState,
-        port: u16,
-        dashboard_enabled: bool,
-    },
+    /// Process running.
+    Live { port: u16, dashboard_enabled: bool },
     /// Shutdown in progress. Values captured from Live at transition time.
     Stopping { port: u16, dashboard_enabled: bool },
 }
@@ -119,8 +99,6 @@ impl InstanceProcess {
             executable_path,
             port,
             dashboard_enabled,
-            next_health_check_at: None,
-            health_failure_count: 0,
             alive_failure_count: 0,
             next_alive_check_at: None,
         }

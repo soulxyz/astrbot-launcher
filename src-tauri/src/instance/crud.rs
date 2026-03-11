@@ -274,10 +274,9 @@ pub fn list_instances(
                     (InstanceState::Starting, inst.port, is_dashboard_enabled(id))
                 }
                 Some(InstanceRuntimeInfo::Live {
-                    state,
                     port,
                     dashboard_enabled,
-                }) => (*state, *port, *dashboard_enabled),
+                }) => (InstanceState::Running, *port, *dashboard_enabled),
                 Some(InstanceRuntimeInfo::Stopping {
                     port,
                     dashboard_enabled,
