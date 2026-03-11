@@ -28,7 +28,7 @@ use crate::utils::paths::{
 use crate::utils::proxy;
 use crate::utils::validation::validate_instance_id;
 
-const STARTUP_LOG_TIMEOUT_SECS: u64 = 300;
+use crate::process::LIVENESS_TIMEOUT_SECS;
 
 /// Result of a successful instance launch.
 pub struct LaunchResult {
@@ -254,7 +254,7 @@ pub async fn launch_instance(
     });
 
     // Wait for startup signal, process early-exit, or timeout.
-    let timeout = tokio::time::sleep(tokio::time::Duration::from_secs(STARTUP_LOG_TIMEOUT_SECS));
+    let timeout = tokio::time::sleep(tokio::time::Duration::from_secs(LIVENESS_TIMEOUT_SECS));
     tokio::pin!(timeout);
     tokio::select! {
         biased;
@@ -308,7 +308,7 @@ pub async fn launch_instance(
             log::error!(
                 "Instance {} startup timed out ({}s)",
                 instance_id,
-                STARTUP_LOG_TIMEOUT_SECS
+                LIVENESS_TIMEOUT_SECS
             );
             // Avoid killing an unrelated process if PID got reused.
             if can_signal_expected_process(pid, &executable_path) {

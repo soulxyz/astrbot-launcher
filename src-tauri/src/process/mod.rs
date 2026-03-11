@@ -21,16 +21,11 @@ pub use control::{
 };
 pub use manager::ProcessManager;
 
-/// Maximum backoff interval between liveness probes.
-const MAX_BACKOFF: Duration = Duration::from_secs(30);
+/// Timeout (in seconds) for liveness-related operations: startup detection
+/// and the process monitor's dead-process threshold.
+pub const LIVENESS_TIMEOUT_SECS: u64 = 300;
 
-/// Capped exponential backoff: `2^count` seconds, clamped to [`MAX_BACKOFF`].
-pub(super) fn calculate_backoff(failure_count: u32) -> Duration {
-    let secs = 1u64 << failure_count.min(5); // 1, 2, 4, 8, 16, 32
-    Duration::from_secs(secs).min(MAX_BACKOFF)
-}
-
-/// Runtime monitor tick interval.
+/// Runtime monitor tick interval (also the fixed liveness probe interval).
 const MONITOR_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Timeout for graceful shutdown before force killing.
@@ -38,8 +33,11 @@ const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// On Windows, number of consecutive liveness probe failures before treating
 /// process-alive as definitively false.
+///
+/// Computed as `LIVENESS_TIMEOUT_SECS / MONITOR_INTERVAL` so the total
+/// tolerance window equals [`LIVENESS_TIMEOUT_SECS`].
 #[cfg(target_os = "windows")]
-const ALIVE_EXIT_THRESHOLD: u32 = 5;
+const ALIVE_EXIT_THRESHOLD: u32 = (LIVENESS_TIMEOUT_SECS / MONITOR_INTERVAL.as_secs()) as u32;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -66,7 +64,7 @@ pub struct InstanceProcess {
     /// Number of consecutive failed liveness probes.
     /// Always 0 on non-Windows (no retry mechanism).
     pub(crate) alive_failure_count: u32,
-    /// When to perform the next liveness probe (for exponential backoff).
+    /// When to perform the next liveness probe (fixed interval).
     /// Always `None` on non-Windows (no retry mechanism).
     pub(crate) next_alive_check_at: Option<std::time::Instant>,
 }
