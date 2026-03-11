@@ -15,20 +15,28 @@ export function InstanceStatusTag({ instance, deployProgress }: InstanceStatusTa
     return <Tag color="processing">部署中</Tag>;
   }
 
-  const tagColor =
-    instance.state === 'running'
-      ? 'green'
-      : instance.state === 'starting' || instance.state === 'stopping'
-        ? 'processing'
-        : 'default';
-  const tagText =
-    instance.state === 'running'
-      ? '运行中'
-      : instance.state === 'starting'
-        ? '启动中'
-        : instance.state === 'stopping'
-          ? '正在停止'
-          : '已停止';
+  let tagColor: string;
+  let tagText: string;
+
+  switch (instance.state) {
+    case 'running':
+      tagColor = 'green';
+      tagText = '运行中';
+      break;
+    case 'starting':
+      tagColor = 'processing';
+      tagText = '启动中';
+      break;
+    case 'stopping':
+      tagColor = 'processing';
+      tagText = '正在停止';
+      break;
+    case 'stopped':
+    default:
+      tagColor = 'default';
+      tagText = '已停止';
+      break;
+  }
 
   return (
     <Space size="small">
