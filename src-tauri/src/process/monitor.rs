@@ -276,14 +276,13 @@ fn probe_liveness(
         );
         None
     } else {
-        let probe_interval = super::MONITOR_INTERVAL;
         log::debug!(
             "Instance {} liveness probe failed (count: {}), retry in {}s",
             entry.id,
             new_count,
-            probe_interval.as_secs()
+            super::LIVENESS_PROBE_INTERVAL_SECS
         );
-        Some((new_count, Some(now + probe_interval), None))
+        Some((new_count, Some(now + super::MONITOR_INTERVAL), None))
     }
 }
 
