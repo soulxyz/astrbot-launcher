@@ -17,10 +17,22 @@ export default function About() {
   }, []);
 
   const handleCheckUpdate = async () => {
-    await checkForUpdate();
-    const state = useUpdateStore.getState();
-    if (!state.hasUpdate) {
-      message.success('已是最新版本');
+    try {
+      await checkForUpdate();
+      const state = useUpdateStore.getState();
+      if (!state.hasUpdate) {
+        message.success('已是最新版本');
+      }
+    } catch {
+      message.error('检查更新失败');
+    }
+  };
+
+  const handleInstallUpdate = async () => {
+    try {
+      await installUpdate();
+    } catch {
+      message.error('更新安装失败');
     }
   };
 
@@ -38,7 +50,8 @@ export default function About() {
           <Button
             type={hasUpdate ? 'primary' : 'default'}
             loading={hasUpdate ? installing : checking}
-            onClick={hasUpdate ? installUpdate : handleCheckUpdate}
+            disabled={checking || installing}
+            onClick={hasUpdate ? handleInstallUpdate : handleCheckUpdate}
           >
             {hasUpdate ? `更新到 v${newVersion}` : '检查更新'}
           </Button>

@@ -14,7 +14,7 @@ interface UpdateState {
 
 let cachedUpdate: Update | null = null;
 
-export const useUpdateStore = create<UpdateState>((set) => ({
+export const useUpdateStore = create<UpdateState>((set, get) => ({
   hasUpdate: false,
   newVersion: '',
   releaseNotes: '',
@@ -22,6 +22,7 @@ export const useUpdateStore = create<UpdateState>((set) => ({
   installing: false,
 
   checkForUpdate: async () => {
+    if (get().checking) return;
     set({ checking: true });
     try {
       const update = await check();
@@ -37,7 +38,10 @@ export const useUpdateStore = create<UpdateState>((set) => ({
         set({ hasUpdate: false, newVersion: '', releaseNotes: '' });
       }
     } catch (e) {
+      cachedUpdate = null;
+      set({ hasUpdate: false, newVersion: '', releaseNotes: '' });
       console.error('Update check failed:', e);
+      throw e;
     } finally {
       set({ checking: false });
     }
@@ -51,6 +55,7 @@ export const useUpdateStore = create<UpdateState>((set) => ({
       await relaunch();
     } catch (e) {
       console.error('Update install failed:', e);
+      throw e;
     } finally {
       set({ installing: false });
     }
