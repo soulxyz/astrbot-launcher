@@ -105,12 +105,6 @@ pub(crate) fn build_proxy_env_vars(config: &AppConfig) -> Result<Vec<(OsString, 
 
 pub(crate) fn apply_proxy_env(cmd: &mut Command, env_vars: &[(OsString, OsString)]) {
     if env_vars.is_empty() {
-        for key in PROXY_ENV_KEYS {
-            cmd.env_remove(key);
-        }
-        for key in NO_PROXY_ENV_KEYS {
-            cmd.env_remove(key);
-        }
         return;
     }
 
