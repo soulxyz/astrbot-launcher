@@ -30,7 +30,7 @@ pub(crate) const DEFAULT_NO_PROXY_VALUE: &str = concat!(
 );
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProxySchemeKind {
+pub(crate) enum ProxySchemeKind {
     HttpFamily,
     SocksFamily,
 }
@@ -75,21 +75,6 @@ impl ProxySettings {
     pub(crate) fn with_no_proxy(mut self, no_proxy: Option<String>) -> Self {
         self.no_proxy = normalize_opt_string(no_proxy);
         self
-    }
-
-    pub(crate) fn merge(&mut self, other: Self) {
-        if other.all_proxy.is_some() {
-            self.all_proxy = other.all_proxy;
-        }
-        if other.http_proxy.is_some() {
-            self.http_proxy = other.http_proxy;
-        }
-        if other.https_proxy.is_some() {
-            self.https_proxy = other.https_proxy;
-        }
-        if other.no_proxy.is_some() {
-            self.no_proxy = other.no_proxy;
-        }
     }
 }
 
@@ -195,7 +180,7 @@ pub(crate) fn build_single_url_proxy_settings(
 
     ensure_supported_proxy_scheme(&url)?;
 
-    let settings = if is_socks_proxy_url(&url) {
+    let settings = if matches!(proxy_scheme_kind(&url), Some(ProxySchemeKind::SocksFamily)) {
         ProxySettings::new(source, Some(url), None, None, None)
     } else {
         ProxySettings::new(source, None, Some(url.clone()), Some(url), None)
@@ -226,7 +211,7 @@ fn environment_proxy_settings() -> Option<ProxySettings> {
     let no_proxy = first_env_value(ProxyEnvSlot::No);
 
     if let Some(url) = all_proxy.as_deref() {
-        if is_http_family_proxy_url(url) {
+        if matches!(proxy_scheme_kind(url), Some(ProxySchemeKind::HttpFamily)) {
             if http_proxy.is_none() {
                 http_proxy = Some(url.to_string());
             }
@@ -238,7 +223,7 @@ fn environment_proxy_settings() -> Option<ProxySettings> {
     }
 
     if let Some(url) = http_proxy.as_deref() {
-        if is_socks_proxy_url(url) {
+        if matches!(proxy_scheme_kind(url), Some(ProxySchemeKind::SocksFamily)) {
             if all_proxy.is_none() {
                 all_proxy = Some(url.to_string());
             }
@@ -247,7 +232,7 @@ fn environment_proxy_settings() -> Option<ProxySettings> {
     }
 
     if let Some(url) = https_proxy.as_deref() {
-        if is_socks_proxy_url(url) {
+        if matches!(proxy_scheme_kind(url), Some(ProxySchemeKind::SocksFamily)) {
             if all_proxy.is_none() {
                 all_proxy = Some(url.to_string());
             }
@@ -311,6 +296,10 @@ pub(crate) fn build_proxy_env_vars(config: &AppConfig) -> Result<Vec<(OsString, 
     Ok(vars)
 }
 
+/// Apply resolved proxy env to a child process.
+///
+/// Passing an empty `env_vars` slice intentionally clears inherited proxy
+/// variables so the child runs without proxy configuration.
 pub(crate) fn apply_proxy_env(cmd: &mut Command, env_vars: &[(OsString, OsString)]) {
     for (_, keys) in PROXY_ENV_SLOTS {
         for key in keys {
@@ -330,21 +319,17 @@ fn normalize_opt_string(value: Option<String>) -> Option<String> {
     })
 }
 
-fn proxy_scheme_kind(url: &str) -> Option<ProxySchemeKind> {
-    let scheme = url.trim().split_once("://")?.0;
-    Some(match scheme {
+pub(crate) fn proxy_scheme_kind_from_scheme(scheme: &str) -> Option<ProxySchemeKind> {
+    Some(match scheme.trim().to_ascii_lowercase().as_str() {
         "http" | "https" => ProxySchemeKind::HttpFamily,
         "socks" | "socks4" | "socks4a" | "socks5" | "socks5h" => ProxySchemeKind::SocksFamily,
         _ => return None,
     })
 }
 
-fn is_http_family_proxy_url(url: &str) -> bool {
-    matches!(proxy_scheme_kind(url), Some(ProxySchemeKind::HttpFamily))
-}
-
-fn is_socks_proxy_url(url: &str) -> bool {
-    matches!(proxy_scheme_kind(url), Some(ProxySchemeKind::SocksFamily))
+fn proxy_scheme_kind(url: &str) -> Option<ProxySchemeKind> {
+    let scheme = url.trim().split_once("://")?.0;
+    proxy_scheme_kind_from_scheme(scheme)
 }
 
 fn ensure_supported_proxy_scheme(url: &str) -> Result<()> {
@@ -359,9 +344,14 @@ fn ensure_supported_proxy_scheme(url: &str) -> Result<()> {
 }
 
 fn first_env_value(slot: ProxyEnvSlot) -> Option<String> {
-    PROXY_ENV_SLOTS
-        .iter()
-        .find(|(candidate, _)| *candidate == slot)
-        .and_then(|(_, keys)| keys.iter().find_map(|key| env::var(key).ok()))
+    let keys: &[&str] = match slot {
+        ProxyEnvSlot::All => &["ALL_PROXY", "all_proxy"],
+        ProxyEnvSlot::Http => &["HTTP_PROXY", "http_proxy"],
+        ProxyEnvSlot::Https => &["HTTPS_PROXY", "https_proxy"],
+        ProxyEnvSlot::No => &["NO_PROXY", "no_proxy"],
+    };
+
+    keys.iter()
+        .find_map(|key| env::var(key).ok())
         .and_then(|value| normalize_opt_string(Some(value)))
 }

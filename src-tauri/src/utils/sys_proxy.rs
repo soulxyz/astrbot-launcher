@@ -2,7 +2,10 @@
 // Copyright (c) 2023-2025 Sean McArthur
 // Portions of this file are derived from hyper-util.
 
-use crate::utils::proxy::{normalize_proxy_url_with_scheme, ProxySettings, ProxySource};
+use crate::utils::proxy::{
+    normalize_proxy_url_with_scheme, proxy_scheme_kind_from_scheme, ProxySchemeKind, ProxySettings,
+    ProxySource,
+};
 
 const LOCAL_NO_PROXY_ENTRIES: [&str; 4] = ["localhost", "127.0.0.1", "::1", ".local"];
 
@@ -68,8 +71,8 @@ fn parse_proxy_url(
     let (proxy_url, scheme) = normalize_proxy_url_with_scheme(raw, default_scheme)?;
 
     if matches!(
-        scheme.as_str(),
-        "socks" | "socks4" | "socks4a" | "socks5" | "socks5h"
+        proxy_scheme_kind_from_scheme(&scheme),
+        Some(ProxySchemeKind::SocksFamily)
     ) {
         return Some(ProxySettings::new(
             ProxySource::System,
@@ -80,7 +83,10 @@ fn parse_proxy_url(
         ));
     }
 
-    if !matches!(scheme.as_str(), "http" | "https") {
+    if !matches!(
+        proxy_scheme_kind_from_scheme(&scheme),
+        Some(ProxySchemeKind::HttpFamily)
+    ) {
         return None;
     }
 
@@ -107,8 +113,8 @@ fn parse_windows_proxy_server(raw: &str) -> ProxySettings {
     if !raw.contains('=') {
         if let Some((proxy_url, scheme)) = normalize_proxy_url_with_scheme(raw, "http") {
             let parsed = if matches!(
-                scheme.as_str(),
-                "socks" | "socks4" | "socks4a" | "socks5" | "socks5h"
+                proxy_scheme_kind_from_scheme(&scheme),
+                Some(ProxySchemeKind::SocksFamily)
             ) {
                 ProxySettings::new(ProxySource::System, Some(proxy_url), None, None, None)
             } else {
@@ -120,7 +126,15 @@ fn parse_windows_proxy_server(raw: &str) -> ProxySettings {
                     None,
                 )
             };
-            proxy.merge(parsed);
+            if parsed.all_proxy.is_some() {
+                proxy.all_proxy = parsed.all_proxy;
+            }
+            if parsed.http_proxy.is_some() {
+                proxy.http_proxy = parsed.http_proxy;
+            }
+            if parsed.https_proxy.is_some() {
+                proxy.https_proxy = parsed.https_proxy;
+            }
         }
         return proxy;
     }
@@ -137,22 +151,30 @@ fn parse_windows_proxy_server(raw: &str) -> ProxySettings {
         match key.trim().to_ascii_lowercase().as_str() {
             "http" => {
                 if let Some(parsed) = parse_proxy_url(ProxyAssignment::Http, value, "http") {
-                    proxy.merge(parsed);
+                    if parsed.http_proxy.is_some() {
+                        proxy.http_proxy = parsed.http_proxy;
+                    }
                 }
             }
             "https" => {
                 if let Some(parsed) = parse_proxy_url(ProxyAssignment::Https, value, "http") {
-                    proxy.merge(parsed);
+                    if parsed.https_proxy.is_some() {
+                        proxy.https_proxy = parsed.https_proxy;
+                    }
                 }
             }
             "socks" => {
                 if let Some(parsed) = parse_proxy_url(ProxyAssignment::All, value, "socks5") {
-                    proxy.merge(parsed);
+                    if parsed.all_proxy.is_some() {
+                        proxy.all_proxy = parsed.all_proxy;
+                    }
                 }
             }
             "socks4" | "socks4a" | "socks5" | "socks5h" => {
                 if let Some(parsed) = parse_proxy_url(ProxyAssignment::All, value, key.trim()) {
-                    proxy.merge(parsed);
+                    if parsed.all_proxy.is_some() {
+                        proxy.all_proxy = parsed.all_proxy;
+                    }
                 }
             }
             _ => {}
