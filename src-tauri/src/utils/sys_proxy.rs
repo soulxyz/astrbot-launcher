@@ -275,103 +275,10 @@ pub(crate) fn read() -> Option<ProxySettings> {
 
 #[cfg(target_os = "macos")]
 pub(crate) fn read() -> Option<ProxySettings> {
-    use system_configuration::core_foundation::array::CFArray;
-    use system_configuration::core_foundation::base::CFType;
-    use system_configuration::core_foundation::dictionary::CFDictionary;
-    use system_configuration::core_foundation::number::CFNumber;
-    use system_configuration::core_foundation::string::{CFString, CFStringRef};
-    use system_configuration::dynamic_store::SCDynamicStoreBuilder;
-    use system_configuration::sys::schema_definitions::{
-        kSCPropNetProxiesExceptionsList, kSCPropNetProxiesHTTPEnable, kSCPropNetProxiesHTTPPort,
-        kSCPropNetProxiesHTTPProxy, kSCPropNetProxiesHTTPSEnable, kSCPropNetProxiesHTTPSPort,
-        kSCPropNetProxiesHTTPSProxy, kSCPropNetProxiesSOCKSEnable, kSCPropNetProxiesSOCKSPort,
-        kSCPropNetProxiesSOCKSProxy,
-    };
-
-    fn read_proxy_entry(
-        proxies_map: &CFDictionary<CFString, CFType>,
-        enable_key: CFStringRef,
-        host_key: CFStringRef,
-        port_key: CFStringRef,
-        default_scheme: &str,
-    ) -> Option<String> {
-        let enabled = proxies_map
-            .find(enable_key)
-            .and_then(|v| v.downcast::<CFNumber>())
-            .and_then(|n| n.to_i32())
-            .unwrap_or(0);
-        if enabled != 1 {
-            return None;
-        }
-
-        let host = proxies_map
-            .find(host_key)
-            .and_then(|v| v.downcast::<CFString>())
-            .map(|v| v.to_string())?;
-        let port = proxies_map
-            .find(port_key)
-            .and_then(|v| v.downcast::<CFNumber>())
-            .and_then(|n| n.to_i32());
-
-        Some(match port {
-            Some(port) => format!("{}://{}:{}", default_scheme, host, port),
-            None => format!("{}://{}", default_scheme, host),
-        })
-    }
-
-    fn read_exceptions(proxies_map: &CFDictionary<CFString, CFType>) -> String {
-        let key = unsafe { kSCPropNetProxiesExceptionsList };
-        let Some(value) = proxies_map.find(key) else {
-            return String::new();
-        };
-        let Some(entries) = value.downcast::<CFArray<CFString>>() else {
-            return String::new();
-        };
-        join_no_proxy_entries(entries.iter().map(|entry| entry.to_string()))
-    }
-
-    let store = SCDynamicStoreBuilder::new("astrbot-launcher").build()?;
-    let proxies_map = store.get_proxies()?;
-
-    let http_proxy = unsafe {
-        read_proxy_entry(
-            &proxies_map,
-            kSCPropNetProxiesHTTPEnable,
-            kSCPropNetProxiesHTTPProxy,
-            kSCPropNetProxiesHTTPPort,
-            "http",
-        )
-    };
-    let https_proxy = unsafe {
-        read_proxy_entry(
-            &proxies_map,
-            kSCPropNetProxiesHTTPSEnable,
-            kSCPropNetProxiesHTTPSProxy,
-            kSCPropNetProxiesHTTPSPort,
-            "https",
-        )
-    };
-    let socks_proxy = unsafe {
-        read_proxy_entry(
-            &proxies_map,
-            kSCPropNetProxiesSOCKSEnable,
-            kSCPropNetProxiesSOCKSProxy,
-            kSCPropNetProxiesSOCKSPort,
-            "socks5",
-        )
-    };
-    if http_proxy.is_none() && https_proxy.is_none() && socks_proxy.is_none() {
-        return None;
-    }
-
-    let no_proxy = unsafe { read_exceptions(&proxies_map) };
-    Some(ProxySettings::new(
-        ProxySource::System,
-        socks_proxy,
-        http_proxy,
-        https_proxy,
-        Some(no_proxy),
-    ))
+    log::warn!(
+        "macOS system proxy detection is unsupported because the primary maintainer does not have a Mac to validate it"
+    );
+    None
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
