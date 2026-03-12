@@ -241,57 +241,15 @@ async fn install_python_version(
             (download_url, version)
         }
         Ok(config) => {
-            let releases = fetch_python_releases(client).await?;
-
-            let mut download_url = None;
-            let mut python_version = String::new();
-
-            for release in &releases {
-                if let Ok((url, version)) =
-                    find_python_asset_for_version(&release.assets, major_version)
-                {
-                    download_url = Some(url);
-                    python_version = version;
-                    break;
-                }
-            }
-
-            let github_url = download_url.ok_or_else(|| {
-                AppError::python(format!(
-                    "No Python {} build found for current platform",
-                    major_version
-                ))
-            })?;
+            let (github_url, python_version) =
+                find_github_python_asset(client, major_version).await?;
 
             (
                 network_config::build_python_asset_download_url(config.as_ref(), "", &github_url),
                 python_version,
             )
         }
-        Err(_) => {
-            let releases = fetch_python_releases(client).await?;
-
-            let mut download_url = None;
-            let mut python_version = String::new();
-
-            for release in &releases {
-                if let Ok((url, version)) =
-                    find_python_asset_for_version(&release.assets, major_version)
-                {
-                    download_url = Some(url);
-                    python_version = version;
-                    break;
-                }
-            }
-
-            let github_url = download_url.ok_or_else(|| {
-                AppError::python(format!(
-                    "No Python {} build found for current platform",
-                    major_version
-                ))
-            })?;
-            (github_url, python_version)
-        }
+        Err(_) => find_github_python_asset(client, major_version).await?,
     };
 
     let archive_path = target_dir.join("python.tar.gz");
@@ -315,6 +273,24 @@ async fn install_python_version(
     }
 
     Ok(python_version)
+}
+
+async fn find_github_python_asset(
+    client: &Client,
+    major_version: &str,
+) -> Result<(String, String)> {
+    let releases = fetch_python_releases(client).await?;
+
+    for release in &releases {
+        if let Ok((url, version)) = find_python_asset_for_version(&release.assets, major_version) {
+            return Ok((url, version));
+        }
+    }
+
+    Err(AppError::python(format!(
+        "No Python {} build found for current platform",
+        major_version
+    )))
 }
 
 async fn fetch_mainland_python_asset_names(client: &Client) -> Result<Vec<String>> {
