@@ -110,13 +110,7 @@ fn parse_windows_proxy_server(raw: &str) -> ProxySettings {
                 scheme.as_str(),
                 "socks" | "socks4" | "socks4a" | "socks5" | "socks5h"
             ) {
-                ProxySettings::new(
-                    ProxySource::System,
-                    Some(proxy_url.clone()),
-                    Some(proxy_url.clone()),
-                    Some(proxy_url),
-                    None,
-                )
+                ProxySettings::new(ProxySource::System, Some(proxy_url), None, None, None)
             } else {
                 ProxySettings::new(
                     ProxySource::System,

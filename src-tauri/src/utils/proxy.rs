@@ -28,9 +28,12 @@ pub(crate) const DEFAULT_NO_PROXY_VALUE: &str = concat!(
     "127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,100.64.0.0/10,",
     "::1/128,fc00::/7,fe80::/10"
 );
-const SUPPORTED_PROXY_SCHEMES: [&str; 7] = [
-    "http", "https", "socks", "socks4", "socks4a", "socks5", "socks5h",
-];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProxySchemeKind {
+    HttpFamily,
+    SocksFamily,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProxySource {
@@ -192,16 +195,13 @@ pub(crate) fn build_single_url_proxy_settings(
 
     ensure_supported_proxy_scheme(&url)?;
 
-    Ok(Some(
-        ProxySettings::new(
-            source,
-            Some(url.clone()),
-            Some(url.clone()),
-            Some(url),
-            None,
-        )
-        .with_no_proxy(no_proxy),
-    ))
+    let settings = if is_socks_proxy_url(&url) {
+        ProxySettings::new(source, Some(url), None, None, None)
+    } else {
+        ProxySettings::new(source, None, Some(url.clone()), Some(url), None)
+    };
+
+    Ok(Some(settings.with_no_proxy(no_proxy)))
 }
 
 pub(crate) fn parse_configured_proxy_settings(config: &AppConfig) -> Result<Option<ProxySettings>> {
@@ -220,12 +220,47 @@ pub(crate) fn parse_configured_proxy_settings(config: &AppConfig) -> Result<Opti
 }
 
 fn environment_proxy_settings() -> Option<ProxySettings> {
+    let mut all_proxy = first_env_value(ProxyEnvSlot::All);
+    let mut http_proxy = first_env_value(ProxyEnvSlot::Http);
+    let mut https_proxy = first_env_value(ProxyEnvSlot::Https);
+    let no_proxy = first_env_value(ProxyEnvSlot::No);
+
+    if let Some(url) = all_proxy.as_deref() {
+        if is_http_family_proxy_url(url) {
+            if http_proxy.is_none() {
+                http_proxy = Some(url.to_string());
+            }
+            if https_proxy.is_none() {
+                https_proxy = Some(url.to_string());
+            }
+            all_proxy = None;
+        }
+    }
+
+    if let Some(url) = http_proxy.as_deref() {
+        if is_socks_proxy_url(url) {
+            if all_proxy.is_none() {
+                all_proxy = Some(url.to_string());
+            }
+            http_proxy = None;
+        }
+    }
+
+    if let Some(url) = https_proxy.as_deref() {
+        if is_socks_proxy_url(url) {
+            if all_proxy.is_none() {
+                all_proxy = Some(url.to_string());
+            }
+            https_proxy = None;
+        }
+    }
+
     Some(ProxySettings::new(
         ProxySource::Environment,
-        first_env_value(ProxyEnvSlot::All),
-        first_env_value(ProxyEnvSlot::Http),
-        first_env_value(ProxyEnvSlot::Https),
-        first_env_value(ProxyEnvSlot::No),
+        all_proxy,
+        http_proxy,
+        https_proxy,
+        no_proxy,
     ))
     .filter(ProxySettings::has_proxy)
 }
@@ -295,15 +330,31 @@ fn normalize_opt_string(value: Option<String>) -> Option<String> {
     })
 }
 
+fn proxy_scheme_kind(url: &str) -> Option<ProxySchemeKind> {
+    let scheme = url.trim().split_once("://")?.0;
+    Some(match scheme {
+        "http" | "https" => ProxySchemeKind::HttpFamily,
+        "socks" | "socks4" | "socks4a" | "socks5" | "socks5h" => ProxySchemeKind::SocksFamily,
+        _ => return None,
+    })
+}
+
+fn is_http_family_proxy_url(url: &str) -> bool {
+    matches!(proxy_scheme_kind(url), Some(ProxySchemeKind::HttpFamily))
+}
+
+fn is_socks_proxy_url(url: &str) -> bool {
+    matches!(proxy_scheme_kind(url), Some(ProxySchemeKind::SocksFamily))
+}
+
 fn ensure_supported_proxy_scheme(url: &str) -> Result<()> {
     let parsed = Url::parse(url).map_err(|e| AppError::config(format!("代理地址无效: {}", e)))?;
-    if SUPPORTED_PROXY_SCHEMES.contains(&parsed.scheme()) {
+    if proxy_scheme_kind(parsed.as_ref()).is_some() {
         return Ok(());
     }
 
     Err(AppError::config(format!(
-        "代理地址仅支持 {} 协议",
-        SUPPORTED_PROXY_SCHEMES.join("/")
+        "代理地址仅支持 http/https/socks/socks4/socks4a/socks5/socks5h 协议"
     )))
 }
 
