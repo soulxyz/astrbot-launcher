@@ -31,6 +31,12 @@ AstrBot Launcher是一款用于图形化管理AstrBot的桌面应用程序，提
 > [!important]
 > 请确保已升级到最新版本。
 
+### 下载太慢/网络错误
+
+请点击软件页面最左边的“高级”并按需配置代理或源。如果对“代理”、“源”等概念感到陌生，打开“中国大陆一键加速”通常能够解决绝大部分问题。
+
+![Mainland Acceleration](https://pic1.imgdb.cn/item/69b276c8cda91d5fbafff6d8.png)
+
 ### DLL加载失败（常见于Windows ARM64）
 
 ```text
@@ -58,7 +64,7 @@ missing RECORD file
 
 **解决方案：**
 
-1. 打开：设置 → 高级
+1. 点击软件页面最左边的“高级”
 2. 向下滚动至故障排除
 3. 选择对应实例
 4. 点击执行清空虚拟环境
