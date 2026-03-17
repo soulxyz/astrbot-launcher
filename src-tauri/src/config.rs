@@ -110,79 +110,129 @@ fn deserialize_value<T: DeserializeOwned>(raw: &[u8]) -> Result<T> {
     serde_json::from_slice(raw).map_err(|e| AppError::config(e.to_string()))
 }
 
-fn read_value<T: DeserializeOwned>(table_def: TableDefinition<u8, &[u8]>) -> Result<Option<T>> {
-    let db = config_db()?;
-    let read_txn = db.begin_read().map_err(map_redb_error)?;
-    let table = read_txn.open_table(table_def).map_err(map_redb_error)?;
-    let value = table.get(&ROOT_ROW_KEY).map_err(map_redb_error)?;
-
-    if let Some(raw) = value {
-        return deserialize_value::<T>(raw.value()).map(Some);
-    }
-
-    Ok(None)
-}
-
-fn load_or_init_value<T: DeserializeOwned + Serialize>(
-    table_def: TableDefinition<u8, &[u8]>,
-    default: T,
-) -> Result<T> {
-    if let Some(existing) = read_value(table_def)? {
-        return Ok(existing);
-    }
-
+fn insert_config_value(value: &AppConfig) -> Result<()> {
+    let payload = serialize_value(value)?;
     let db = config_db()?;
     let write_txn = db.begin_write().map_err(map_redb_error)?;
-
-    let existing = {
-        let table = write_txn.open_table(table_def).map_err(map_redb_error)?;
-        let value = table.get(&ROOT_ROW_KEY).map_err(map_redb_error)?;
-        if let Some(raw) = value {
-            Some(deserialize_value::<T>(raw.value())?)
-        } else {
-            None
-        }
-    };
-
-    if let Some(value) = existing {
-        return Ok(value);
-    }
-
-    let payload = serialize_value(&default)?;
     {
-        let mut table = write_txn.open_table(table_def).map_err(map_redb_error)?;
+        let mut table = write_txn.open_table(CONFIG_TABLE).map_err(map_redb_error)?;
         table
             .insert(&ROOT_ROW_KEY, payload.as_slice())
             .map_err(map_redb_error)?;
     }
     write_txn.commit().map_err(map_redb_error)?;
-
-    Ok(default)
+    Ok(())
 }
 
-fn with_value_mut<T, F, R>(table_def: TableDefinition<u8, &[u8]>, default: T, f: F) -> Result<R>
+fn insert_manifest_value(value: &AppManifest) -> Result<()> {
+    let payload = serialize_value(value)?;
+    let db = config_db()?;
+    let write_txn = db.begin_write().map_err(map_redb_error)?;
+    {
+        let mut table = write_txn
+            .open_table(MANIFEST_TABLE)
+            .map_err(map_redb_error)?;
+        table
+            .insert(&ROOT_ROW_KEY, payload.as_slice())
+            .map_err(map_redb_error)?;
+    }
+    write_txn.commit().map_err(map_redb_error)?;
+    Ok(())
+}
+
+fn load_or_init_config_value() -> Result<AppConfig> {
+    let stored = {
+        let db = config_db()?;
+        let read_txn = db.begin_read().map_err(map_redb_error)?;
+        let table = read_txn.open_table(CONFIG_TABLE).map_err(map_redb_error)?;
+        table
+            .get(&ROOT_ROW_KEY)
+            .map_err(map_redb_error)?
+            .map(|raw| deserialize_value::<AppConfig>(raw.value()))
+    };
+
+    match stored {
+        Some(Ok(config)) => Ok(config),
+        Some(Err(error)) => {
+            log::warn!(
+                "Config record is corrupted JSON, resetting to default value: {}",
+                error
+            );
+            let default = AppConfig::default();
+            insert_config_value(&default)?;
+            Ok(default)
+        }
+        None => {
+            let default = AppConfig::default();
+            insert_config_value(&default)?;
+            Ok(default)
+        }
+    }
+}
+
+fn load_or_init_manifest_value() -> Result<AppManifest> {
+    let stored = {
+        let db = config_db()?;
+        let read_txn = db.begin_read().map_err(map_redb_error)?;
+        let table = read_txn
+            .open_table(MANIFEST_TABLE)
+            .map_err(map_redb_error)?;
+        table
+            .get(&ROOT_ROW_KEY)
+            .map_err(map_redb_error)?
+            .map(|raw| deserialize_value::<AppManifest>(raw.value()))
+    };
+
+    match stored {
+        Some(Ok(manifest)) => Ok(manifest),
+        Some(Err(error)) => {
+            log::warn!(
+                "Manifest record is corrupted JSON, resetting to default value: {}",
+                error
+            );
+            let default = AppManifest::default();
+            insert_manifest_value(&default)?;
+            Ok(default)
+        }
+        None => {
+            let default = AppManifest::default();
+            insert_manifest_value(&default)?;
+            Ok(default)
+        }
+    }
+}
+
+fn with_config_value_mut<F, R>(f: F) -> Result<R>
 where
-    T: DeserializeOwned + Serialize,
-    F: FnOnce(&mut T) -> Result<R>,
+    F: FnOnce(&mut AppConfig) -> Result<R>,
 {
     let db = config_db()?;
     let write_txn = db.begin_write().map_err(map_redb_error)?;
 
-    let mut value = {
-        let table = write_txn.open_table(table_def).map_err(map_redb_error)?;
+    let mut config = {
+        let table = write_txn.open_table(CONFIG_TABLE).map_err(map_redb_error)?;
         let existing = table.get(&ROOT_ROW_KEY).map_err(map_redb_error)?;
         if let Some(raw) = existing {
-            deserialize_value::<T>(raw.value())?
+            match deserialize_value::<AppConfig>(raw.value()) {
+                Ok(config) => config,
+                Err(error) => {
+                    log::warn!(
+                        "Config record is corrupted JSON, replacing with default before update: {}",
+                        error
+                    );
+                    AppConfig::default()
+                }
+            }
         } else {
-            default
+            AppConfig::default()
         }
     };
 
-    let result = f(&mut value)?;
-    let payload = serialize_value(&value)?;
+    let result = f(&mut config)?;
+    let payload = serialize_value(&config)?;
 
     {
-        let mut table = write_txn.open_table(table_def).map_err(map_redb_error)?;
+        let mut table = write_txn.open_table(CONFIG_TABLE).map_err(map_redb_error)?;
         table
             .insert(&ROOT_ROW_KEY, payload.as_slice())
             .map_err(map_redb_error)?;
@@ -192,10 +242,64 @@ where
     Ok(result)
 }
 
-fn has_value(table_def: TableDefinition<u8, &[u8]>) -> Result<bool> {
+fn with_manifest_value_mut<F, R>(f: F) -> Result<R>
+where
+    F: FnOnce(&mut AppManifest) -> Result<R>,
+{
+    let db = config_db()?;
+    let write_txn = db.begin_write().map_err(map_redb_error)?;
+
+    let mut manifest = {
+        let table = write_txn
+            .open_table(MANIFEST_TABLE)
+            .map_err(map_redb_error)?;
+        let existing = table.get(&ROOT_ROW_KEY).map_err(map_redb_error)?;
+        if let Some(raw) = existing {
+            match deserialize_value::<AppManifest>(raw.value()) {
+                Ok(manifest) => manifest,
+                Err(error) => {
+                    log::warn!(
+                        "Manifest record is corrupted JSON, replacing with default before update: {}",
+                        error
+                    );
+                    AppManifest::default()
+                }
+            }
+        } else {
+            AppManifest::default()
+        }
+    };
+
+    let result = f(&mut manifest)?;
+    let payload = serialize_value(&manifest)?;
+
+    {
+        let mut table = write_txn
+            .open_table(MANIFEST_TABLE)
+            .map_err(map_redb_error)?;
+        table
+            .insert(&ROOT_ROW_KEY, payload.as_slice())
+            .map_err(map_redb_error)?;
+    }
+    write_txn.commit().map_err(map_redb_error)?;
+
+    Ok(result)
+}
+
+fn has_config_record_value() -> Result<bool> {
     let db = config_db()?;
     let read_txn = db.begin_read().map_err(map_redb_error)?;
-    let table = read_txn.open_table(table_def).map_err(map_redb_error)?;
+    let table = read_txn.open_table(CONFIG_TABLE).map_err(map_redb_error)?;
+    let value = table.get(&ROOT_ROW_KEY).map_err(map_redb_error)?;
+    Ok(value.is_some())
+}
+
+fn has_manifest_record_value() -> Result<bool> {
+    let db = config_db()?;
+    let read_txn = db.begin_read().map_err(map_redb_error)?;
+    let table = read_txn
+        .open_table(MANIFEST_TABLE)
+        .map_err(map_redb_error)?;
     let value = table.get(&ROOT_ROW_KEY).map_err(map_redb_error)?;
     Ok(value.is_some())
 }
@@ -205,7 +309,7 @@ pub fn with_config_mut<F, T>(f: F) -> Result<T>
 where
     F: FnOnce(&mut AppConfig) -> Result<T>,
 {
-    with_value_mut(CONFIG_TABLE, AppConfig::default(), f)
+    with_config_value_mut(f)
 }
 
 /// Execute a transactional read-modify-write operation on app manifest.
@@ -213,7 +317,7 @@ pub fn with_manifest_mut<F, T>(f: F) -> Result<T>
 where
     F: FnOnce(&mut AppManifest) -> Result<T>,
 {
-    with_value_mut(MANIFEST_TABLE, AppManifest::default(), f)
+    with_manifest_value_mut(f)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -261,7 +365,7 @@ pub struct BackupInfo {
 }
 
 pub fn load_config() -> Result<Arc<AppConfig>> {
-    let config = load_or_init_value(CONFIG_TABLE, AppConfig::default())?;
+    let config = load_or_init_config_value()?;
     Ok(Arc::new(config))
 }
 
@@ -270,7 +374,7 @@ pub fn reload_config() -> Result<Arc<AppConfig>> {
 }
 
 pub fn load_manifest() -> Result<Arc<AppManifest>> {
-    let manifest = load_or_init_value(MANIFEST_TABLE, AppManifest::default())?;
+    let manifest = load_or_init_manifest_value()?;
     Ok(Arc::new(manifest))
 }
 
@@ -279,9 +383,9 @@ pub fn reload_manifest() -> Result<Arc<AppManifest>> {
 }
 
 pub(crate) fn has_config_record() -> Result<bool> {
-    has_value(CONFIG_TABLE)
+    has_config_record_value()
 }
 
 pub(crate) fn has_manifest_record() -> Result<bool> {
-    has_value(MANIFEST_TABLE)
+    has_manifest_record_value()
 }

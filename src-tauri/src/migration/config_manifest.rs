@@ -113,54 +113,6 @@ fn read_toml_file(path: &Path, file_name: &str) -> Option<String> {
     }
 }
 
-fn parse_legacy_config(content: &str) -> Option<AppConfig> {
-    match toml::from_str::<AppConfig>(content) {
-        Ok(config) => Some(config),
-        Err(error) => {
-            log::warn!(
-                "Migration: failed to parse config.toml as AppConfig: {}",
-                error
-            );
-            toml::from_str::<LegacyAppConfig>(content)
-                .map(LegacyAppConfig::into_config)
-                .map_err(|legacy_error| {
-                    log::warn!(
-                        "Migration: failed to parse config.toml as LegacyAppConfig: {}",
-                        legacy_error
-                    );
-                    legacy_error
-                })
-                .ok()
-        }
-    }
-}
-
-fn parse_legacy_manifest_from_config(content: &str) -> Option<AppManifest> {
-    if !has_manifest_fields(content) {
-        return None;
-    }
-
-    toml::from_str::<LegacyAppConfig>(content)
-        .map(LegacyAppConfig::into_manifest)
-        .map_err(|error| {
-            log::warn!(
-                "Migration: failed to parse legacy manifest fields from config.toml: {}",
-                error
-            );
-            error
-        })
-        .ok()
-}
-
-fn parse_manifest_file(content: &str) -> Option<AppManifest> {
-    toml::from_str::<AppManifest>(content)
-        .map_err(|error| {
-            log::warn!("Migration: failed to parse manifest.toml: {}", error);
-            error
-        })
-        .ok()
-}
-
 /// Merge manifest data from `source` into `target`.
 /// Existing entries in `target` keep priority on conflicts.
 fn merge_manifest(target: &mut AppManifest, source: &AppManifest) {
@@ -188,11 +140,59 @@ fn merge_manifest(target: &mut AppManifest, source: &AppManifest) {
     }
 }
 
-fn merge_manifest_sources(
-    manifest_from_file: Option<AppManifest>,
-    manifest_from_config: Option<AppManifest>,
-) -> Option<AppManifest> {
-    match (manifest_from_file, manifest_from_config) {
+fn load_legacy_state(
+    config_toml: Option<String>,
+    manifest_toml: Option<String>,
+) -> (Option<AppConfig>, Option<AppManifest>) {
+    let parsed_config =
+        config_toml
+            .as_deref()
+            .and_then(|content| match toml::from_str::<AppConfig>(content) {
+                Ok(config) => Some(config),
+                Err(error) => {
+                    log::warn!(
+                        "Migration: failed to parse config.toml as AppConfig: {}",
+                        error
+                    );
+                    toml::from_str::<LegacyAppConfig>(content)
+                        .map(LegacyAppConfig::into_config)
+                        .map_err(|legacy_error| {
+                            log::warn!(
+                                "Migration: failed to parse config.toml as LegacyAppConfig: {}",
+                                legacy_error
+                            );
+                            legacy_error
+                        })
+                        .ok()
+                }
+            });
+
+    let manifest_from_file = manifest_toml.as_deref().and_then(|content| {
+        toml::from_str::<AppManifest>(content)
+            .map_err(|error| {
+                log::warn!("Migration: failed to parse manifest.toml: {}", error);
+                error
+            })
+            .ok()
+    });
+
+    let manifest_from_config = config_toml
+        .as_deref()
+        .filter(|content| has_manifest_fields(content))
+        .and_then(|content| {
+            toml::from_str::<LegacyAppConfig>(content)
+                .map(LegacyAppConfig::into_manifest)
+                .map_err(|error| {
+                    log::warn!(
+                        "Migration: failed to parse legacy manifest fields from config.toml: {}",
+                        error
+                    );
+                    error
+                })
+                .ok()
+        });
+
+    let merged_manifest = match (manifest_from_file, manifest_from_config) {
         (Some(mut file_manifest), Some(config_manifest)) => {
             merge_manifest(&mut file_manifest, &config_manifest);
             Some(file_manifest)
@@ -200,7 +200,9 @@ fn merge_manifest_sources(
         (Some(file_manifest), None) => Some(file_manifest),
         (None, Some(config_manifest)) => Some(config_manifest),
         (None, None) => None,
-    }
+    };
+
+    (parsed_config, merged_manifest)
 }
 
 pub fn migrate_config_manifest_if_needed() {
@@ -231,12 +233,10 @@ pub fn migrate_config_manifest_if_needed() {
 
     let config_toml = read_toml_file(&config_path(), "config.toml");
     let manifest_toml = read_toml_file(&manifest_path(), "manifest.toml");
+    let (config_from_legacy, manifest_from_legacy) = load_legacy_state(config_toml, manifest_toml);
 
     if config_missing {
-        let imported_config = config_toml
-            .as_deref()
-            .and_then(parse_legacy_config)
-            .unwrap_or_default();
+        let imported_config = config_from_legacy.unwrap_or_default();
         if let Err(error) = with_config_mut(|config| {
             *config = imported_config.clone();
             Ok(())
@@ -247,12 +247,7 @@ pub fn migrate_config_manifest_if_needed() {
     }
 
     if manifest_missing {
-        let manifest_from_file = manifest_toml.as_deref().and_then(parse_manifest_file);
-        let manifest_from_config = config_toml
-            .as_deref()
-            .and_then(parse_legacy_manifest_from_config);
-        let imported_manifest =
-            merge_manifest_sources(manifest_from_file, manifest_from_config).unwrap_or_default();
+        let imported_manifest = manifest_from_legacy.unwrap_or_default();
 
         if let Err(error) = with_manifest_mut(|manifest| {
             *manifest = imported_manifest.clone();
