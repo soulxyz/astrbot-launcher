@@ -12,12 +12,17 @@ pub(crate) fn get_data_dir() -> PathBuf {
     home.join(".astrbot_launcher")
 }
 
-/// Get the path to the config file.
+/// Get the path to the unified application data database.
+pub(crate) fn data_db_path() -> PathBuf {
+    get_data_dir().join("data.redb")
+}
+
+/// Get the path to the legacy config TOML file (migration only).
 pub(crate) fn config_path() -> PathBuf {
     get_data_dir().join("config.toml")
 }
 
-/// Get the path to the manifest file.
+/// Get the path to the legacy manifest TOML file (migration only).
 pub(crate) fn manifest_path() -> PathBuf {
     get_data_dir().join("manifest.toml")
 }
