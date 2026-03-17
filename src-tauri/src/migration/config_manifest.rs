@@ -237,8 +237,8 @@ pub fn migrate_config_manifest_if_needed() {
 
     if config_missing {
         let imported_config = config_from_legacy.unwrap_or_default();
-        if let Err(error) = with_config_mut(|config| {
-            *config = imported_config.clone();
+        if let Err(error) = with_config_mut(move |config| {
+            *config = imported_config;
             Ok(())
         }) {
             log::warn!("Migration: failed to import config into redb: {}", error);
@@ -249,8 +249,8 @@ pub fn migrate_config_manifest_if_needed() {
     if manifest_missing {
         let imported_manifest = manifest_from_legacy.unwrap_or_default();
 
-        if let Err(error) = with_manifest_mut(|manifest| {
-            *manifest = imported_manifest.clone();
+        if let Err(error) = with_manifest_mut(move |manifest| {
+            *manifest = imported_manifest;
             Ok(())
         }) {
             log::warn!("Migration: failed to import manifest into redb: {}", error);
