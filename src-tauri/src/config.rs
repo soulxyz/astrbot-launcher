@@ -89,8 +89,8 @@ fn open_config_db() -> Result<Database> {
     let db = Database::create(data_db_path()).map_err(map_redb_error)?;
     let write_txn = db.begin_write().map_err(map_redb_error)?;
     {
-        let _ = write_txn.open_table(CONFIG_TABLE).map_err(map_redb_error)?;
-        let _ = write_txn
+        write_txn.open_table(CONFIG_TABLE).map_err(map_redb_error)?;
+        write_txn
             .open_table(MANIFEST_TABLE)
             .map_err(map_redb_error)?;
     }
