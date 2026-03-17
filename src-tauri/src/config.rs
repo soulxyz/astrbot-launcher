@@ -1,17 +1,17 @@
 use std::collections::HashMap;
-use std::fs;
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
+use once_cell::sync::OnceCell;
+use redb::{Database, ReadableDatabase as _, ReadableTable as _, TableDefinition};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use crate::error::{AppError, Result};
-use crate::utils::paths::{config_path, ensure_data_dirs, manifest_path};
-use crate::utils::sync::{lock_mutex_recover, read_lock_recover, write_lock_recover};
+use crate::utils::paths::{data_db_path, ensure_data_dirs};
 
-static CONFIG_LOCK: Mutex<()> = Mutex::new(());
-static CONFIG_CACHE: OnceLock<RwLock<Arc<AppConfig>>> = OnceLock::new();
-static MANIFEST_LOCK: Mutex<()> = Mutex::new(());
-static MANIFEST_CACHE: OnceLock<RwLock<Arc<AppManifest>>> = OnceLock::new();
+static CONFIG_DB: OnceCell<Database> = OnceCell::new();
+const CONFIG_TABLE: TableDefinition<u8, &[u8]> = TableDefinition::new("app_config");
+const MANIFEST_TABLE: TableDefinition<u8, &[u8]> = TableDefinition::new("app_manifest");
+const ROOT_ROW_KEY: u8 = 0;
 
 fn default_true() -> bool {
     true
@@ -80,122 +80,140 @@ pub struct AppManifest {
     pub tracked_instances_snapshot: Vec<String>,
 }
 
-fn load_config_from_disk() -> Result<AppConfig> {
-    let path = config_path();
-    if !path.exists() {
-        log::debug!("Config file not found, creating default");
-        let config = AppConfig::default();
-        save_config_to_disk(&config)?;
-        return Ok(config);
-    }
-
-    let content = fs::read_to_string(&path).map_err(|e| AppError::config(e.to_string()))?;
-    toml::from_str(&content).map_err(|e| AppError::config(e.to_string()))
+fn map_redb_error(err: impl std::fmt::Display) -> AppError {
+    AppError::config(err.to_string())
 }
 
-fn save_config_to_disk(config: &AppConfig) -> Result<()> {
+fn open_config_db() -> Result<Database> {
     ensure_data_dirs()?;
-    let content = toml::to_string_pretty(config).map_err(|e| AppError::config(e.to_string()))?;
-    fs::write(config_path(), content).map_err(|e| {
-        log::error!("Failed to write config to disk: {}", e);
-        AppError::config(e.to_string())
-    })
+    let db = Database::create(data_db_path()).map_err(map_redb_error)?;
+    let write_txn = db.begin_write().map_err(map_redb_error)?;
+    {
+        let _ = write_txn.open_table(CONFIG_TABLE).map_err(map_redb_error)?;
+        let _ = write_txn
+            .open_table(MANIFEST_TABLE)
+            .map_err(map_redb_error)?;
+    }
+    write_txn.commit().map_err(map_redb_error)?;
+    Ok(db)
 }
 
-fn load_manifest_from_disk() -> Result<AppManifest> {
-    let path = manifest_path();
-    if !path.exists() {
-        log::debug!("Manifest file not found, creating default");
-        let manifest = AppManifest::default();
-        save_manifest_to_disk(&manifest)?;
-        return Ok(manifest);
+fn config_db() -> Result<&'static Database> {
+    CONFIG_DB.get_or_try_init(open_config_db)
+}
+
+fn serialize_value<T: Serialize>(value: &T) -> Result<Vec<u8>> {
+    serde_json::to_vec(value).map_err(|e| AppError::config(e.to_string()))
+}
+
+fn deserialize_value<T: DeserializeOwned>(raw: &[u8]) -> Result<T> {
+    serde_json::from_slice(raw).map_err(|e| AppError::config(e.to_string()))
+}
+
+fn read_value<T: DeserializeOwned>(table_def: TableDefinition<u8, &[u8]>) -> Result<Option<T>> {
+    let db = config_db()?;
+    let read_txn = db.begin_read().map_err(map_redb_error)?;
+    let table = read_txn.open_table(table_def).map_err(map_redb_error)?;
+    let value = table.get(&ROOT_ROW_KEY).map_err(map_redb_error)?;
+
+    if let Some(raw) = value {
+        return deserialize_value::<T>(raw.value()).map(Some);
     }
 
-    let content = fs::read_to_string(&path).map_err(|e| AppError::config(e.to_string()))?;
-    toml::from_str(&content).map_err(|e| AppError::config(e.to_string()))
+    Ok(None)
 }
 
-fn save_manifest_to_disk(manifest: &AppManifest) -> Result<()> {
-    ensure_data_dirs()?;
-    let content = toml::to_string_pretty(manifest).map_err(|e| AppError::config(e.to_string()))?;
-    fs::write(manifest_path(), content).map_err(|e| {
-        log::error!("Failed to write manifest to disk: {}", e);
-        AppError::config(e.to_string())
-    })
-}
-
-fn get_config_cache() -> Result<&'static RwLock<Arc<AppConfig>>> {
-    if let Some(cache) = CONFIG_CACHE.get() {
-        return Ok(cache);
+fn load_or_init_value<T: DeserializeOwned + Serialize>(
+    table_def: TableDefinition<u8, &[u8]>,
+    default: T,
+) -> Result<T> {
+    if let Some(existing) = read_value(table_def)? {
+        return Ok(existing);
     }
 
-    let config = load_config_from_disk()?;
-    let _ = CONFIG_CACHE.set(RwLock::new(Arc::new(config)));
+    let db = config_db()?;
+    let write_txn = db.begin_write().map_err(map_redb_error)?;
 
-    CONFIG_CACHE
-        .get()
-        .ok_or_else(|| AppError::config("CONFIG_CACHE not initialized"))
-}
+    let existing = {
+        let table = write_txn.open_table(table_def).map_err(map_redb_error)?;
+        let value = table.get(&ROOT_ROW_KEY).map_err(map_redb_error)?;
+        if let Some(raw) = value {
+            Some(deserialize_value::<T>(raw.value())?)
+        } else {
+            None
+        }
+    };
 
-fn get_manifest_cache() -> Result<&'static RwLock<Arc<AppManifest>>> {
-    if let Some(cache) = MANIFEST_CACHE.get() {
-        return Ok(cache);
+    if let Some(value) = existing {
+        return Ok(value);
     }
 
-    let manifest = load_manifest_from_disk()?;
-    let _ = MANIFEST_CACHE.set(RwLock::new(Arc::new(manifest)));
+    let payload = serialize_value(&default)?;
+    {
+        let mut table = write_txn.open_table(table_def).map_err(map_redb_error)?;
+        table
+            .insert(&ROOT_ROW_KEY, payload.as_slice())
+            .map_err(map_redb_error)?;
+    }
+    write_txn.commit().map_err(map_redb_error)?;
 
-    MANIFEST_CACHE
-        .get()
-        .ok_or_else(|| AppError::config("MANIFEST_CACHE not initialized"))
+    Ok(default)
 }
 
-/// Execute a read-modify-write operation on the config file while holding a lock.
-/// This prevents concurrent modifications from causing data loss.
+fn with_value_mut<T, F, R>(table_def: TableDefinition<u8, &[u8]>, default: T, f: F) -> Result<R>
+where
+    T: DeserializeOwned + Serialize,
+    F: FnOnce(&mut T) -> Result<R>,
+{
+    let db = config_db()?;
+    let write_txn = db.begin_write().map_err(map_redb_error)?;
+
+    let mut value = {
+        let table = write_txn.open_table(table_def).map_err(map_redb_error)?;
+        let existing = table.get(&ROOT_ROW_KEY).map_err(map_redb_error)?;
+        if let Some(raw) = existing {
+            deserialize_value::<T>(raw.value())?
+        } else {
+            default
+        }
+    };
+
+    let result = f(&mut value)?;
+    let payload = serialize_value(&value)?;
+
+    {
+        let mut table = write_txn.open_table(table_def).map_err(map_redb_error)?;
+        table
+            .insert(&ROOT_ROW_KEY, payload.as_slice())
+            .map_err(map_redb_error)?;
+    }
+    write_txn.commit().map_err(map_redb_error)?;
+
+    Ok(result)
+}
+
+fn has_value(table_def: TableDefinition<u8, &[u8]>) -> Result<bool> {
+    let db = config_db()?;
+    let read_txn = db.begin_read().map_err(map_redb_error)?;
+    let table = read_txn.open_table(table_def).map_err(map_redb_error)?;
+    let value = table.get(&ROOT_ROW_KEY).map_err(map_redb_error)?;
+    Ok(value.is_some())
+}
+
+/// Execute a transactional read-modify-write operation on app config.
 pub fn with_config_mut<F, T>(f: F) -> Result<T>
 where
     F: FnOnce(&mut AppConfig) -> Result<T>,
 {
-    let _guard = lock_mutex_recover(&CONFIG_LOCK, "CONFIG_LOCK");
-    let cache = get_config_cache()?;
-
-    let current = {
-        let config = read_lock_recover(cache, "CONFIG_CACHE");
-        Arc::clone(&config)
-    };
-
-    let mut updated = (*current).clone();
-    let result = f(&mut updated)?;
-    save_config_to_disk(&updated)?;
-
-    *write_lock_recover(cache, "CONFIG_CACHE") = Arc::new(updated);
-    log::debug!("Config saved");
-
-    Ok(result)
+    with_value_mut(CONFIG_TABLE, AppConfig::default(), f)
 }
 
-/// Execute a read-modify-write operation on the manifest file while holding a lock.
-/// This prevents concurrent modifications from causing data loss.
+/// Execute a transactional read-modify-write operation on app manifest.
 pub fn with_manifest_mut<F, T>(f: F) -> Result<T>
 where
     F: FnOnce(&mut AppManifest) -> Result<T>,
 {
-    let _guard = lock_mutex_recover(&MANIFEST_LOCK, "MANIFEST_LOCK");
-    let cache = get_manifest_cache()?;
-
-    let current = {
-        let manifest = read_lock_recover(cache, "MANIFEST_CACHE");
-        Arc::clone(&manifest)
-    };
-
-    let mut updated = (*current).clone();
-    let result = f(&mut updated)?;
-    save_manifest_to_disk(&updated)?;
-
-    *write_lock_recover(cache, "MANIFEST_CACHE") = Arc::new(updated);
-    log::debug!("Manifest saved");
-
-    Ok(result)
+    with_value_mut(MANIFEST_TABLE, AppManifest::default(), f)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -243,29 +261,27 @@ pub struct BackupInfo {
 }
 
 pub fn load_config() -> Result<Arc<AppConfig>> {
-    let cache = get_config_cache()?;
-    let config = read_lock_recover(cache, "CONFIG_CACHE");
-    Ok(Arc::clone(&config))
+    let config = load_or_init_value(CONFIG_TABLE, AppConfig::default())?;
+    Ok(Arc::new(config))
 }
 
 pub fn reload_config() -> Result<Arc<AppConfig>> {
-    let _guard = lock_mutex_recover(&CONFIG_LOCK, "CONFIG_LOCK");
-    let cache = get_config_cache()?;
-    let fresh = Arc::new(load_config_from_disk()?);
-    *write_lock_recover(cache, "CONFIG_CACHE") = Arc::clone(&fresh);
-    Ok(fresh)
+    load_config()
 }
 
 pub fn load_manifest() -> Result<Arc<AppManifest>> {
-    let cache = get_manifest_cache()?;
-    let manifest = read_lock_recover(cache, "MANIFEST_CACHE");
-    Ok(Arc::clone(&manifest))
+    let manifest = load_or_init_value(MANIFEST_TABLE, AppManifest::default())?;
+    Ok(Arc::new(manifest))
 }
 
 pub fn reload_manifest() -> Result<Arc<AppManifest>> {
-    let _guard = lock_mutex_recover(&MANIFEST_LOCK, "MANIFEST_LOCK");
-    let cache = get_manifest_cache()?;
-    let fresh = Arc::new(load_manifest_from_disk()?);
-    *write_lock_recover(cache, "MANIFEST_CACHE") = Arc::clone(&fresh);
-    Ok(fresh)
+    load_manifest()
+}
+
+pub(crate) fn has_config_record() -> Result<bool> {
+    has_value(CONFIG_TABLE)
+}
+
+pub(crate) fn has_manifest_record() -> Result<bool> {
+    has_value(MANIFEST_TABLE)
 }

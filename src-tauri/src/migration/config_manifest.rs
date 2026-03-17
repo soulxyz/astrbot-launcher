@@ -1,11 +1,14 @@
 use std::collections::HashMap;
 use std::fs;
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{AppConfig, AppManifest, InstalledVersion, InstanceConfig};
-use crate::error::{AppError, Result};
-use crate::utils::paths::{config_path, ensure_data_dirs, manifest_path};
+use crate::config::{
+    has_config_record, has_manifest_record, with_config_mut, with_manifest_mut, AppConfig,
+    AppManifest, InstalledVersion, InstanceConfig,
+};
+use crate::utils::paths::{config_path, manifest_path};
 
 const MANIFEST_FIELDS: [&str; 3] = [
     "instances",
@@ -96,25 +99,70 @@ fn has_manifest_fields(content: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn save_config_to_disk(config: &AppConfig) -> Result<()> {
-    ensure_data_dirs()?;
-    let content = toml::to_string_pretty(config).map_err(|e| AppError::config(e.to_string()))?;
-    fs::write(config_path(), content).map_err(|e| AppError::config(e.to_string()))
+fn read_toml_file(path: &Path, file_name: &str) -> Option<String> {
+    if !path.exists() {
+        return None;
+    }
+
+    match fs::read_to_string(path) {
+        Ok(content) => Some(content),
+        Err(error) => {
+            log::warn!("Migration: failed to read {}: {}", file_name, error);
+            None
+        }
+    }
 }
 
-fn save_manifest_to_disk(manifest: &AppManifest) -> Result<()> {
-    ensure_data_dirs()?;
-    let content = toml::to_string_pretty(manifest).map_err(|e| AppError::config(e.to_string()))?;
-    fs::write(manifest_path(), content).map_err(|e| AppError::config(e.to_string()))
+fn parse_legacy_config(content: &str) -> Option<AppConfig> {
+    match toml::from_str::<AppConfig>(content) {
+        Ok(config) => Some(config),
+        Err(error) => {
+            log::warn!(
+                "Migration: failed to parse config.toml as AppConfig: {}",
+                error
+            );
+            toml::from_str::<LegacyAppConfig>(content)
+                .map(LegacyAppConfig::into_config)
+                .map_err(|legacy_error| {
+                    log::warn!(
+                        "Migration: failed to parse config.toml as LegacyAppConfig: {}",
+                        legacy_error
+                    );
+                    legacy_error
+                })
+                .ok()
+        }
+    }
 }
 
-fn read_manifest_from_disk() -> Option<AppManifest> {
-    let content = fs::read_to_string(manifest_path()).ok()?;
-    toml::from_str::<AppManifest>(&content).ok()
+fn parse_legacy_manifest_from_config(content: &str) -> Option<AppManifest> {
+    if !has_manifest_fields(content) {
+        return None;
+    }
+
+    toml::from_str::<LegacyAppConfig>(content)
+        .map(LegacyAppConfig::into_manifest)
+        .map_err(|error| {
+            log::warn!(
+                "Migration: failed to parse legacy manifest fields from config.toml: {}",
+                error
+            );
+            error
+        })
+        .ok()
 }
 
-/// Merge legacy manifest data into an existing manifest.
-/// Existing entries in `target` take priority over `source` on conflicts.
+fn parse_manifest_file(content: &str) -> Option<AppManifest> {
+    toml::from_str::<AppManifest>(content)
+        .map_err(|error| {
+            log::warn!("Migration: failed to parse manifest.toml: {}", error);
+            error
+        })
+        .ok()
+}
+
+/// Merge manifest data from `source` into `target`.
+/// Existing entries in `target` keep priority on conflicts.
 fn merge_manifest(target: &mut AppManifest, source: &AppManifest) {
     for (id, instance) in &source.instances {
         target
@@ -140,80 +188,80 @@ fn merge_manifest(target: &mut AppManifest, source: &AppManifest) {
     }
 }
 
+fn merge_manifest_sources(
+    manifest_from_file: Option<AppManifest>,
+    manifest_from_config: Option<AppManifest>,
+) -> Option<AppManifest> {
+    match (manifest_from_file, manifest_from_config) {
+        (Some(mut file_manifest), Some(config_manifest)) => {
+            merge_manifest(&mut file_manifest, &config_manifest);
+            Some(file_manifest)
+        }
+        (Some(file_manifest), None) => Some(file_manifest),
+        (None, Some(config_manifest)) => Some(config_manifest),
+        (None, None) => None,
+    }
+}
+
 pub fn migrate_config_manifest_if_needed() {
-    let config_file = config_path();
-    if !config_file.exists() {
-        return;
-    }
-
-    let content = match fs::read_to_string(&config_file) {
-        Ok(content) => content,
-        Err(e) => {
+    let config_missing = match has_config_record() {
+        Ok(has) => !has,
+        Err(error) => {
             log::warn!(
-                "Migration: failed to read config.toml during config/manifest migration: {}",
-                e
+                "Migration: failed to inspect redb config record before migration: {}",
+                error
+            );
+            return;
+        }
+    };
+    let manifest_missing = match has_manifest_record() {
+        Ok(has) => !has,
+        Err(error) => {
+            log::warn!(
+                "Migration: failed to inspect redb manifest record before migration: {}",
+                error
             );
             return;
         }
     };
 
-    if !has_manifest_fields(&content) {
-        // config.toml is already clean, nothing to migrate.
+    if !config_missing && !manifest_missing {
         return;
     }
 
-    let legacy = match toml::from_str::<LegacyAppConfig>(&content) {
-        Ok(legacy) => legacy,
-        Err(e) => {
-            log::warn!(
-                "Migration: failed to parse config.toml during config/manifest migration: {}",
-                e
-            );
-            return;
-        }
-    };
+    let config_toml = read_toml_file(&config_path(), "config.toml");
+    let manifest_toml = read_toml_file(&manifest_path(), "manifest.toml");
 
-    let legacy_manifest = legacy.clone().into_manifest();
-    let manifest_file = manifest_path();
-
-    if manifest_file.exists() {
-        // Manifest exists — merge legacy data into it.
-        match read_manifest_from_disk() {
-            Some(mut existing) => {
-                merge_manifest(&mut existing, &legacy_manifest);
-                if let Err(e) = save_manifest_to_disk(&existing) {
-                    log::warn!("Migration: failed to write merged manifest.toml: {}", e);
-                    return;
-                }
-            }
-            None => {
-                // Manifest file exists but cannot be parsed — overwrite with legacy data.
-                if let Err(e) = save_manifest_to_disk(&legacy_manifest) {
-                    log::warn!("Migration: failed to write manifest.toml: {}", e);
-                    return;
-                }
-            }
-        }
-    } else {
-        // No manifest file — create from legacy.
-        if let Err(e) = save_manifest_to_disk(&legacy_manifest) {
-            log::warn!(
-                "Migration: failed to write manifest.toml during config/manifest migration: {}",
-                e
-            );
+    if config_missing {
+        let imported_config = config_toml
+            .as_deref()
+            .and_then(parse_legacy_config)
+            .unwrap_or_default();
+        if let Err(error) = with_config_mut(|config| {
+            *config = imported_config.clone();
+            Ok(())
+        }) {
+            log::warn!("Migration: failed to import config into redb: {}", error);
             return;
         }
     }
 
-    // Clean manifest fields from config.toml.
-    let clean_config = legacy.into_config();
-    if let Err(e) = save_config_to_disk(&clean_config) {
-        log::warn!(
-            "Migration: failed to rewrite config.toml during config/manifest migration: {}",
-            e
-        );
-        return;
+    if manifest_missing {
+        let manifest_from_file = manifest_toml.as_deref().and_then(parse_manifest_file);
+        let manifest_from_config = config_toml
+            .as_deref()
+            .and_then(parse_legacy_manifest_from_config);
+        let imported_manifest =
+            merge_manifest_sources(manifest_from_file, manifest_from_config).unwrap_or_default();
+
+        if let Err(error) = with_manifest_mut(|manifest| {
+            *manifest = imported_manifest.clone();
+            Ok(())
+        }) {
+            log::warn!("Migration: failed to import manifest into redb: {}", error);
+            return;
+        }
     }
 
-    log::info!("Migrated manifest fields from config.toml to manifest.toml");
+    log::info!("Migrated legacy config/manifest TOML data into data.redb");
 }

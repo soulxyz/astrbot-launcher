@@ -180,11 +180,18 @@ pub async fn save_proxy(
         ));
     }
 
+    let ProxyFields {
+        url,
+        port,
+        username,
+        password,
+    } = proxy_fields;
+
     let next_client = with_config_mut(move |config| {
-        config.proxy_url = proxy_fields.url.clone();
-        config.proxy_port = proxy_fields.port.clone();
-        config.proxy_username = proxy_fields.username.clone();
-        config.proxy_password = proxy_fields.password.clone();
+        config.proxy_url = url;
+        config.proxy_port = port;
+        config.proxy_username = username;
+        config.proxy_password = password;
         network_config::build_http_client_from_config(config)
     })?;
 
