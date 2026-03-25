@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { check, type Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
+import { GITHUB_REPO } from '../constants';
 
 type CheckResult = 'found' | 'latest' | 'error';
 
@@ -40,13 +41,14 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
         });
         // Fetch full release notes asynchronously; mark ready when done to trigger animation
         fetch(
-          `https://api.github.com/repos/AstrBotDevs/astrbot-launcher/releases/tags/v${update.version}`
+          `https://api.github.com/repos/${GITHUB_REPO}/releases/tags/v${update.version}`
         )
           .then((res) => (res.ok ? (res.json() as Promise<{ body?: string }>) : null))
           .then((data) => {
             set({ releaseNotes: data?.body ?? get().releaseNotes, releaseNotesReady: true });
           })
-          .catch(() => {
+          .catch((err) => {
+            console.error('Failed to fetch full release notes:', err);
             set({ releaseNotesReady: true });
           });
         return 'found';

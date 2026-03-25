@@ -56,5 +56,11 @@ export const STATUS_MESSAGES = {
   INSTANCE_RESTARTED: (port: number) => `实例已重启，端口: ${port}`,
 } as const;
 
+// ========================================
+// GitHub Repository
+// ========================================
+
+export const GITHUB_REPO = 'AstrBotDevs/astrbot-launcher';
+
 export { OPERATION_KEYS } from './operationKeys';
 export { ErrorCode, getErrorText } from './errorCodes';
